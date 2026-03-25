@@ -175,6 +175,31 @@ gh_device_state_t gh_service_get_state(const gh_service_t* svc);
 #define GH_FUNC_MASK_ECG   (0x40U)   /* ECG */
 #define GH_FUNC_MASK_PT    (0x80U)   /* 体温 */
 
+/**
+ * @brief 发送 Cardiff 控制命令
+ * @param svc       服务实例
+ * @param ctrl_val  控制值 (如唤醒 0xC3/休眠 0xC4/复位 0xC2 等)
+ * @return true=发送成功
+ */
+bool gh_service_cardiff_control(gh_service_t* svc, uint8_t ctrl_val);
+
+/**
+ * @brief 发送获取EVK版本命令
+ * @param svc       服务实例
+ * @param type      版本类型
+ * @return true=发送成功
+ */
+bool gh_service_get_evk_version(gh_service_t* svc, uint8_t type);
+
+/**
+ * @brief 发送工作模式设置命令
+ * @param svc       服务实例
+ * @param mode      工作模式 (0=MCU Online, 1=Auto pass through)
+ * @param func_mask 功能掩码
+ * @return true=发送成功
+ */
+bool gh_service_set_work_mode(gh_service_t* svc, uint8_t mode, uint32_t func_mask);
+
 #ifdef __cplusplus
 }
 #endif

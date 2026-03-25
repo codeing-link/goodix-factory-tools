@@ -64,7 +64,8 @@
     }
     .logo-text { font-size: 1.1rem; font-weight: 700;
       background: linear-gradient(135deg,#fff,#94a3b8);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent; color: transparent; }
 
     .header-spacer { flex: 1; }
 
@@ -469,6 +470,53 @@
       </div>
     </div>
 
+    <!-- 高级控制 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">🛠️</div>
+        <span class="card-title">高级控制</span>
+      </div>
+
+      <div class="form-group" style="display:flex; gap:0.5rem; align-items:center;">
+        <label class="form-label" style="width:60px;">模式选择</label>
+        <select class="form-select" id="workModeSelect" style="flex:1" onchange="setWorkMode()">
+          <option value="0" selected>Mcu Online Work Mode</option>
+          <option value="1">Auto Pass Through Mode</option>
+        </select>
+      </div>
+
+      <div class="form-group" style="display:flex; gap:0.5rem; align-items:center;">
+        <label class="form-label" style="width:60px;">版本信息</label>
+        <span id="versionText" style="flex:1; font-size:0.75rem; color:var(--text-muted);">None</span>
+        <button class="btn btn-outline btn-sm" onclick="getVersion()">获取版本</button>
+      </div>
+
+      <div class="form-group" style="display:flex; gap:0.5rem; align-items:center;">
+        <label class="form-label" style="width:60px;">芯片控制</label>
+        <select class="form-select" id="chipCtrlSelect" style="flex:1">
+          <option value="195">WAKE_UP (0xC3)</option>
+          <option value="196">SLEEP (0xC4)</option>
+          <option value="194">RESET (0xC2)</option>
+          <option value="194">RESUME (0xC2)</option>
+        </select>
+        <button class="btn btn-outline btn-sm" onclick="sendChipCtrl()">发送</button>
+      </div>
+
+      <div class="form-group" style="display:flex; gap:0.5rem; align-items:center;">
+        <label class="form-label" style="width:60px;">读寄存器</label>
+        <input type="text" class="form-input" id="readRegAddr" placeholder="Addr(Hex)" style="flex:1; min-width:60px;" />
+        <span id="readRegValDisplay" style="flex:1; font-family:'JetBrains Mono',monospace; font-size:0.75rem; color:var(--primary); text-align:center;">--</span>
+        <button class="btn btn-outline btn-sm" onclick="readRegister()">读取</button>
+      </div>
+
+      <div class="form-group" style="display:flex; gap:0.5rem; align-items:center;">
+        <label class="form-label" style="width:60px;">写寄存器</label>
+        <input type="text" class="form-input" id="singleWriteAddr" placeholder="Addr" style="flex:1; min-width:50px" />
+        <input type="text" class="form-input" id="singleWriteVal" placeholder="Value" style="flex:1; min-width:50px" />
+        <button class="btn btn-outline btn-sm" onclick="writeSingleRegister()">下发</button>
+      </div>
+    </div>
+
     <!-- API 端点参考 -->
     <div class="card">
       <div class="card-header">
@@ -529,7 +577,10 @@
         <div class="card-icon">⚙️</div>
         <span class="card-title">寄存器配置下发</span>
         <div style="flex:1"></div>
-        <button class="btn btn-outline btn-sm" onclick="addRegRow()">+ 添加</button>
+        <input type="file" id="configFileImport" style="display:none" onchange="importConfigFile(event)">
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('configFileImport').click()">📁 导入配置</button>
+        <button class="btn btn-outline btn-sm" onclick="addRegRow()" style="margin-left:4px">+ 添加</button>
+        <button class="btn btn-outline btn-sm" onclick="clearRegTable()" style="margin-left:4px">清空</button>
         <button class="btn btn-primary btn-sm" onclick="sendConfig()" style="margin-left:4px">发送</button>
       </div>
       <table class="reg-table">
@@ -687,6 +738,59 @@ function handleFrame(frame) {
   }
   waveData = waveChannels[activeChannel].slice();  /* 当前显示通道 */
   drawWaveform();
+}
+
+/* ============================================================
+ * 高级控制 API (工作模式、获取版本、芯片控制、读寄存器)
+ * ============================================================ */
+async function setWorkMode() {
+  const mode = parseInt(document.getElementById('workModeSelect').value);
+  const data = await apiPost('/device/work_mode', { mode: mode, func_mask: 0xFFFFFFFF });
+  if (data && data.sent) addLog(`[发送] 设置工作模式为: ${mode === 0 ? 'MCU Online' : 'Auto Pass Through'}`, 'send');
+}
+
+async function getVersion() {
+  const data = await apiGet('/device/version');
+  if (data && data.sent) {
+    addLog(`[发送] 请求获取版本信息`, 'send');
+    document.getElementById('versionText').innerText = "Waiting for response...";
+  }
+}
+
+async function sendChipCtrl() {
+  const ctrl = parseInt(document.getElementById('chipCtrlSelect').value);
+  const data = await apiPost('/device/chip_ctrl', { ctrl_val: ctrl });
+  if (data && data.sent) {
+    addLog(`[发送] 芯片控制命令: 0x${ctrl.toString(16).toUpperCase()}`, 'send');
+  }
+}
+
+async function readRegister() {
+  const addrHex = document.getElementById('readRegAddr').value.trim() || '0000';
+  const addr = parseInt(addrHex, 16);
+  if (isNaN(addr)) return;
+  const data = await apiPost('/device/read_reg', { addr: addr, count: 1 });
+  if (data && data.sent) {
+    addLog(`[发送] 请求读取寄存器地址 0x${addrHex.toUpperCase()}`, 'send');
+    document.getElementById('readRegValDisplay').innerText = "Wait...";
+  }
+}
+
+async function writeSingleRegister() {
+  const addrHex = document.getElementById('singleWriteAddr').value.trim();
+  const valHex = document.getElementById('singleWriteVal').value.trim();
+  const addr = parseInt(addrHex, 16);
+  const val = parseInt(valHex, 16);
+  if (isNaN(addr) || isNaN(val)) {
+    addLog('[ERR] 请输入合法的 16 进制地址和数值', 'err');
+    return;
+  }
+  const data = await apiPost('/device/config', { regs: [{ addr: addr, data: val }] });
+  if (data && data.sent) {
+    addLog(`[发送] 单个寄存器下发: [0x${addr.toString(16).toUpperCase()}] = 0x${val.toString(16).toUpperCase()}`, 'send');
+  } else {
+    addLog('[ERR] 发送失败: 设备未连接', 'err');
+  }
 }
 
 /* ============================================================
@@ -924,8 +1028,57 @@ async function loadSerialList() {
 /* ============================================================
  * 寄存器配置下发
  * ============================================================ */
+/* ============================================================
+ * 导入并解析配置文件
+ * ============================================================ */
+function importConfigFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const text = e.target.result;
+    // Match something like: {0x0016,0x001f}
+    const regex = /\{0x([0-9a-fA-F]{1,4})\s*,\s*0x([0-9a-fA-F]{1,4})\}/g;
+    let match;
+    const regList = [];
+    while ((match = regex.exec(text)) !== null) {
+       regList.push({
+         addr: match[1].padStart(4, '0').toUpperCase(),
+         val: match[2].padStart(4, '0').toUpperCase()
+       });
+    }
+
+    if (regList.length > 0) {
+      const tbody = document.getElementById('regTableBody');
+      tbody.innerHTML = '';
+      regList.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><input class="reg-input" value="0x${r.addr}" /></td>
+          <td><input class="reg-input" value="0x${r.val}" /></td>
+          <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()">✕</button></td>
+        `;
+        tbody.appendChild(tr);
+      });
+      addLog(`[INFO] 成功解析并导入 ${regList.length} 条寄存器配置`, 'info');
+    } else {
+      addLog(`[ERR] 文件未匹配到 {0xADDR, 0xVAL} 格式内容`, 'err');
+    }
+    // reset input allows importing the same file again
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
+function clearRegTable() {
+  document.getElementById('regTableBody').innerHTML = '';
+  addLog('[INFO] 已清空寄存器配置表', 'info');
+}
+
 function addRegRow() {
   const tbody = document.getElementById('regTableBody');
+
   const tr    = document.createElement('tr');
   tr.innerHTML = `
     <td><input class="reg-input" placeholder="0x0102" /></td>

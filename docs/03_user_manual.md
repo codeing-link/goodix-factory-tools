@@ -8,6 +8,31 @@
 
 本项目使用 `CMake` 作为构建系统，核心后端基于纯C语言实现，前端为单页HTML应用，并通过集成的Web服务器（基于Mongoose）进行托管。
 
+**注意：windows 需要提前准备如下环境**
+
+```shell
+1️⃣ 安装 MSYS2
+👉 https://www.msys2.org/
+
+2️⃣ 打开这个（非常关键）
+MSYS2 MinGW64
+⚠️ 不是普通 MSYS2 shell！
+
+3️⃣ 安装编译器
+pacman -S mingw-w64-x86_64-gcc
+pacman -S mingw-w64-x86_64-make
+
+4️⃣ 配置 PATH（最容易错）
+把这个路径加入系统环境变量：
+C:\msys64\mingw64\bin
+
+5️⃣ 重新打开 cmd（必须！）
+再测试：
+gcc --version
+mingw32-make --version
+都有输出，表示安装成功
+```
+
 ### 1.1 编译工程
 
 请在终端中执行以下命令生成构建目录并编译：

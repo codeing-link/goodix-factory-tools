@@ -270,7 +270,7 @@ static void s_handle_config(struct mg_connection *c,
                              struct mg_http_message *hm,
                              gh_api_t *api) {
     if (!api->service || !gh_service_is_connected(api->service)) {
-        s_reply_ok(c, "{\"sent\":false,\"reason\":\"not_connected\"}");
+        s_reply_err(c, -1, "not_connected");
         return;
     }
     /* 简单解析：遍历 JSON 数组，寻找 "addr":N,"data":N 对 */
@@ -299,6 +299,78 @@ static void s_handle_config(struct mg_connection *c,
     } else {
         s_reply_err(c, -4, "No valid regs found");
     }
+}
+
+/** POST /api/device/chip_ctrl
+ *  Body: {"ctrl_val":194} // 0xC2 for reset
+ */
+static void s_handle_chip_ctrl(struct mg_connection *c,
+                               struct mg_http_message *hm,
+                               gh_api_t *api) {
+    if (!api->service || !gh_service_is_connected(api->service)) {
+        s_reply_err(c, -1, "not_connected");
+        return;
+    }
+    long ctrl_val = s_json_long(hm->body.buf, hm->body.len, "ctrl_val", 0xC2);
+    gh_service_cardiff_control(api->service, (uint8_t)ctrl_val);
+    s_reply_ok(c, "{\"sent\":true}");
+}
+
+/** POST /api/device/work_mode
+ *  Body: {"mode":0,"func_mask":4294967295} // 0xFFFFFFFF
+ */
+static void s_handle_work_mode(struct mg_connection *c,
+                               struct mg_http_message *hm,
+                               gh_api_t *api) {
+    if (!api->service || !gh_service_is_connected(api->service)) {
+        s_reply_err(c, -1, "not_connected");
+        return;
+    }
+    long mode = s_json_long(hm->body.buf, hm->body.len, "mode", 0);
+    long func_mask = s_json_long(hm->body.buf, hm->body.len, "func_mask", 0xFFFFFFFF);
+    gh_service_set_work_mode(api->service, (uint8_t)mode, (uint32_t)func_mask);
+    s_reply_ok(c, "{\"sent\":true}");
+}
+
+/** GET /api/device/version */
+static void s_handle_get_version(struct mg_connection *c,
+                                 struct mg_http_message *hm,
+                                 gh_api_t *api) {
+    (void)hm;
+    if (!api->service || !gh_service_is_connected(api->service)) {
+        s_reply_err(c, -1, "not_connected");
+        return;
+    }
+    gh_service_get_evk_version(api->service, 1);
+    /* In a real implementation this would asynchronously wait for the string.
+       For now, we just issue the command. */
+    s_reply_ok(c, "{\"sent\":true,\"msg\":\"Async request issued\"}");
+}
+
+/** POST /api/device/read_reg
+ *  Body: {"addr":258,"count":1}
+ */
+static void s_handle_read_reg(struct mg_connection *c,
+                              struct mg_http_message *hm,
+                              gh_api_t *api) {
+    if (!api->service || !gh_service_is_connected(api->service)) {
+        s_reply_err(c, -1, "not_connected");
+        return;
+    }
+    long addr = s_json_long(hm->body.buf, hm->body.len, "addr", 0);
+    long count = s_json_long(hm->body.buf, hm->body.len, "count", 1);
+    
+    gh_cmd_param_t param;
+    param.cmd = 0x03; // RegisterReadWrite
+    param.args.reg_oper.op_mode = 0; // Read
+    param.args.reg_oper.reg_count = (uint8_t)count;
+    param.args.reg_oper.reg_addr = (uint16_t)addr;
+    param.args.reg_oper.regs = NULL;
+    
+    bool ret = gh_service_register_rw(api->service, &param);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "{\"sent\":%s}", ret ? "true" : "false");
+    s_reply_ok(c, buf);
 }
 
 /** GET /api/device/data（轮询备用接口）*/
@@ -406,6 +478,14 @@ static void s_mongoose_handler(struct mg_connection *c,
             s_handle_start(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/config")) {
             s_handle_config(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/device/chip_ctrl")) {
+            s_handle_chip_ctrl(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/device/work_mode")) {
+            s_handle_work_mode(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/device/version")) {
+            s_handle_get_version(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/device/read_reg")) {
+            s_handle_read_reg(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/data")) {
             s_handle_get_data(c, hm, api);
         } else if (s_uri_eq(hm, "/api/serial/list")) {

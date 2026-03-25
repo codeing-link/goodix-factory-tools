@@ -190,3 +190,18 @@ gh_device_state_t gh_service_get_state(const gh_service_t* svc) {
     if (!svc) return GH_DEV_STATE_DISCONNECTED;
     return svc->device_state;
 }
+
+bool gh_service_cardiff_control(gh_service_t* svc, uint8_t ctrl_val) {
+    if (!svc || !gh_service_is_connected(svc)) return false;
+    return gh_cmd_cardiff_control(&svc->parser, ctrl_val);
+}
+
+bool gh_service_get_evk_version(gh_service_t* svc, uint8_t type) {
+    if (!svc || !gh_service_is_connected(svc)) return false;
+    return gh_cmd_get_evk_version(&svc->parser, type);
+}
+
+bool gh_service_set_work_mode(gh_service_t* svc, uint8_t mode, uint32_t func_mask) {
+    if (!svc || !gh_service_is_connected(svc)) return false;
+    return gh_cmd_set_work_mode(&svc->parser, mode, func_mask);
+}
