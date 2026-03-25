@@ -1,0 +1,20 @@
+# Build and compilation outputs
+build/
+bin/
+*.o
+*.exe
+*.obj
+*.a
+*.dylib
+*.dll
+*.so
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Third-party dependencies (downloaded by CMake)
+third_party/mongoose/

@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>GH Protocol Web UI</title>
+  <meta name="description" content="GH3x2x 生物传感器设备控制面板 - 替代Qt上位机的Web界面"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ===== 设计系统 ===== */
+    :root {
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --bg-base: #0f0f13;
+      --bg-card: #1a1a24;
+      --bg-card2: #22223a;
+      --border: rgba(99,102,241,0.18);
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --radius: 12px;
+      --shadow: 0 4px 32px rgba(0,0,0,0.4);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ===== 顶部导航 ===== */
+    .header {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      display: flex;
+      align-items: center;
+      height: 64px;
+      gap: 1rem;
+      position: sticky; top: 0; z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+    .logo-icon {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--primary), #8b5cf6);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.2rem;
+      box-shadow: 0 0 16px rgba(99,102,241,0.4);
+    }
+    .logo-text { font-size: 1.1rem; font-weight: 700;
+      background: linear-gradient(135deg,#fff,#94a3b8);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+
+    .header-spacer { flex: 1; }
+
+    .status-badge {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.75rem; font-weight: 500;
+      padding: 0.3rem 0.8rem;
+      border-radius: 100px;
+      background: rgba(239,68,68,0.12);
+      color: var(--danger);
+      border: 1px solid rgba(239,68,68,0.3);
+      transition: all 0.3s;
+    }
+    .status-badge.connected {
+      background: rgba(16,185,129,0.12);
+      color: var(--success);
+      border-color: rgba(16,185,129,0.3);
+    }
+    .status-badge.sampling {
+      background: rgba(245,158,11,0.12);
+      color: var(--warning);
+      border-color: rgba(245,158,11,0.3);
+    }
+    .status-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: currentColor;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    /* ===== 主布局 ===== */
+    .main {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      grid-template-rows: auto 1fr;
+      gap: 1.5rem;
+      padding: 1.5rem;
+      max-width: 1600px;
+      margin: 0 auto;
+      min-height: calc(100vh - 64px);
+    }
+
+    /* ===== 卡片 ===== */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      box-shadow: var(--shadow);
+    }
+    .card-header {
+      display: flex; align-items: center; gap: 0.5rem;
+      margin-bottom: 1rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .card-icon {
+      width: 28px; height: 28px;
+      background: linear-gradient(135deg, var(--primary), #8b5cf6);
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.85rem;
+    }
+    .card-title {
+      font-size: 0.875rem; font-weight: 600; color: var(--text-primary);
+    }
+
+    /* ===== 左侧面板 ===== */
+    .left-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      grid-row: 1 / 3;
+    }
+
+    /* 串口配置 */
+    .form-group { margin-bottom: 0.75rem; }
+    .form-label {
+      display: block;
+      font-size: 0.75rem; font-weight: 500; color: var(--text-secondary);
+      margin-bottom: 0.3rem;
+    }
+    .form-input, .form-select {
+      width: 100%;
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.5rem 0.75rem;
+      color: var(--text-primary);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-input:focus, .form-select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99,102,241,0.15);
+    }
+    .form-select option { background: #1a1a24; }
+
+    /* ===== 按钮 ===== */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 0.4rem;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      font-size: 0.8rem; font-weight: 500;
+      cursor: pointer; border: none;
+      transition: all 0.2s;
+      outline: none;
+    }
+    .btn:active { transform: scale(0.97); }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+      color: #fff;
+      box-shadow: 0 2px 12px rgba(99,102,241,0.32);
+    }
+    .btn-primary:hover { box-shadow: 0 4px 20px rgba(99,102,241,0.5); filter: brightness(1.1); }
+
+    .btn-success {
+      background: linear-gradient(135deg, var(--success), #059669);
+      color: #fff;
+      box-shadow: 0 2px 12px rgba(16,185,129,0.32);
+    }
+    .btn-danger {
+      background: linear-gradient(135deg, var(--danger), #dc2626);
+      color: #fff;
+      box-shadow: 0 2px 12px rgba(239,68,68,0.32);
+    }
+    .btn-outline {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+    .btn-outline:hover { border-color: var(--primary); color: var(--primary); }
+    .btn-full { width: 100%; }
+    .btn-sm { padding: 0.35rem 0.75rem; font-size: 0.75rem; }
+
+    .btn-row {
+      display: flex; gap: 0.5rem;
+    }
+
+    /* ===== 采集控制 ===== */
+    .func-checkboxes {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 0.4rem;
+    }
+    .func-check {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.75rem; color: var(--text-secondary);
+      cursor: pointer; padding: 0.3rem;
+      border-radius: 6px;
+      transition: background 0.2s;
+    }
+    .func-check:hover { background: rgba(99,102,241,0.08); }
+    .func-check input[type=checkbox] { accent-color: var(--primary); }
+
+    /* ===== 右侧：数据展示 ===== */
+    .right-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      grid-column: 2;
+      grid-row: 1 / 3;
+    }
+
+    /* 实时数值卡片 */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 1rem;
+    }
+    .metric-card {
+      background: var(--bg-card2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.2s;
+    }
+    .metric-card:hover { transform: translateY(-2px); }
+    .metric-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--primary), transparent);
+    }
+    .metric-label {
+      font-size: 0.7rem; font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.05em;
+      margin-bottom: 0.3rem;
+    }
+    .metric-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.6rem; font-weight: 600;
+      color: var(--text-primary);
+    }
+    .metric-unit { font-size: 0.65rem; color: var(--text-muted); margin-left: 2px; }
+
+    /* 实时波形区域 */
+    .chart-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    .chart-canvas-wrap {
+      flex: 1;
+      background: #0a0a10;
+      border-radius: 8px;
+      position: relative;
+      overflow: hidden;
+      min-height: 220px;
+    }
+    canvas#waveform {
+      width: 100%; height: 100%;
+      display: block;
+    }
+
+    /* 数据日志 */
+    .log-area {
+      height: 180px;
+      overflow-y: auto;
+      background: #0a0a10;
+      border-radius: 8px;
+      padding: 0.75rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      line-height: 1.6;
+    }
+    .log-area::-webkit-scrollbar { width: 4px; }
+    .log-area::-webkit-scrollbar-track { background: transparent; }
+    .log-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .log-entry { color: var(--text-secondary); }
+    .log-entry.recv { color: #67e8f9; }
+    .log-entry.send { color: #86efac; }
+    .log-entry.err  { color: var(--danger); }
+    .log-entry.info { color: #c4b5fd; }
+
+    /* API端点卡片 */
+    .api-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 0.5rem;
+    }
+    .api-item {
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 0.75rem;
+      font-size: 0.72rem;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .api-method {
+      display: inline-block;
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.65rem; font-weight: 700;
+      margin-right: 4px;
+    }
+    .m-get  { background: rgba(16,185,129,0.15); color: var(--success); }
+    .m-post { background: rgba(99,102,241,0.15); color: var(--primary); }
+    .m-ws   { background: rgba(245,158,11,0.15); color: var(--warning); }
+    .api-path { color: var(--text-secondary); }
+
+    /* WebSocket状态 */
+    .ws-indicator {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.73rem; color: var(--text-muted);
+    }
+    .ws-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--danger);
+      transition: background 0.3s;
+    }
+    .ws-dot.live { background: var(--success); animation: pulse 1.5s infinite; }
+
+    /* ===== 寄存器配置区 ===== */
+    .reg-table {
+      width: 100%; border-collapse: collapse;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+    }
+    .reg-table th {
+      text-align: left; padding: 0.4rem 0.6rem;
+      color: var(--text-muted); font-weight: 500;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.7rem;
+    }
+    .reg-table td { padding: 0.35rem 0.6rem; }
+    .reg-table tr:hover td { background: rgba(99,102,241,0.06); }
+    .reg-input {
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.2rem 0.4rem;
+      color: var(--text-primary);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.73rem;
+      width: 90px;
+    }
+
+    @media (max-width: 900px) {
+      .main { grid-template-columns: 1fr; }
+      .left-panel { grid-row: auto; }
+      .right-panel { grid-column: 1; grid-row: auto; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ===== 顶部导航 ===== -->
+<header class="header">
+  <div class="logo">
+    <div class="logo-icon">⚡</div>
+    <span class="logo-text">GH Protocol UI</span>
+  </div>
+  <div class="header-spacer"></div>
+  <div class="ws-indicator" id="wsIndicator">
+    <div class="ws-dot" id="wsDot"></div>
+    <span id="wsLabel">WebSocket 未连接</span>
+  </div>
+  <div class="status-badge" id="statusBadge">
+    <div class="status-dot"></div>
+    <span id="statusLabel">未连接</span>
+  </div>
+</header>
+
+<!-- ===== 主内容 ===== -->
+<main class="main">
+
+  <!-- 左侧控制面板 -->
+  <aside class="left-panel">
+
+    <!-- 串口连接 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">🔌</div>
+        <span class="card-title">串口连接</span>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="portInput">串口设备</label>
+        <input type="text" class="form-input" id="portInput"
+               value="/dev/ttyUSB0" placeholder="/dev/ttyUSB0" />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="baudSelect">波特率</label>
+        <select class="form-select" id="baudSelect">
+          <option value="9600">9600</option>
+          <option value="115200">115200</option>
+          <option value="230400">230400</option>
+          <option value="400000" selected>400000</option>
+          <option value="460800">460800</option>
+          <option value="921600">921600</option>
+        </select>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-primary btn-full" id="connectBtn" onclick="toggleConnect()">
+          🔗 连接设备
+        </button>
+      </div>
+    </div>
+
+    <!-- 采集控制 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">📡</div>
+        <span class="card-title">采集控制</span>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">功能通道</label>
+        <div class="func-checkboxes">
+          <label class="func-check"><input type="checkbox" id="funcHR" value="0x02" checked> 心率</label>
+          <label class="func-check"><input type="checkbox" id="funcSPO2" value="0x20"> 血氧</label>
+          <label class="func-check"><input type="checkbox" id="funcECG" value="0x40"> ECG</label>
+          <label class="func-check"><input type="checkbox" id="funcHRV" value="0x04"> HRV</label>
+          <label class="func-check"><input type="checkbox" id="funcBP" value="0x10"> 血压</label>
+          <label class="func-check"><input type="checkbox" id="funcADT" value="0x01"> ADT</label>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="modeSelect">采样模式</label>
+        <select class="form-select" id="modeSelect">
+          <option value="0">EVK 模式</option>
+          <option value="1">Verify 模式</option>
+        </select>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-success btn-full" id="startBtn" onclick="startSampling()" disabled>
+          ▶ 开始采集
+        </button>
+        <button class="btn btn-danger btn-sm" id="stopBtn" onclick="stopSampling()" disabled>
+          ■
+        </button>
+      </div>
+    </div>
+
+    <!-- API 端点参考 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">🌐</div>
+        <span class="card-title">API 接口</span>
+      </div>
+      <div class="api-grid">
+        <div class="api-item"><span class="api-method m-get">GET</span><span class="api-path">/api/device/status</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/connect</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/start</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/config</span></div>
+        <div class="api-item"><span class="api-method m-get">GET</span><span class="api-path">/api/device/data</span></div>
+        <div class="api-item"><span class="api-method m-ws">WS</span><span class="api-path">/ws</span></div>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- 右侧数据面板 -->
+  <section class="right-panel">
+
+    <!-- 实时指标 -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">心率</div>
+        <div class="metric-value" id="metricHR">--<span class="metric-unit">BPM</span></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">血氧SpO₂</div>
+        <div class="metric-value" id="metricSPO2">--<span class="metric-unit">%</span></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">帧数</div>
+        <div class="metric-value" id="metricFrames">0</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">功能ID</div>
+        <div class="metric-value" id="metricFuncID">--</div>
+      </div>
+    </div>
+
+    <!-- 波形图 -->
+    <div class="card chart-area">
+      <div class="card-header">
+        <div class="card-icon">📈</div>
+        <span class="card-title">实时波形（Channel 0）</span>
+        <div style="flex:1"></div>
+        <button class="btn btn-outline btn-sm" onclick="clearWave()">清除</button>
+      </div>
+      <div class="chart-canvas-wrap">
+        <canvas id="waveform"></canvas>
+      </div>
+    </div>
+
+    <!-- 寄存器配置下发 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">⚙️</div>
+        <span class="card-title">寄存器配置下发</span>
+        <div style="flex:1"></div>
+        <button class="btn btn-outline btn-sm" onclick="addRegRow()">+ 添加</button>
+        <button class="btn btn-primary btn-sm" onclick="sendConfig()" style="margin-left:4px">发送</button>
+      </div>
+      <table class="reg-table">
+        <thead>
+          <tr><th>地址 (Hex)</th><th>数据 (Hex)</th><th></th></tr>
+        </thead>
+        <tbody id="regTableBody">
+          <tr>
+            <td><input class="reg-input" placeholder="0x0102" /></td>
+            <td><input class="reg-input" placeholder="0x0001" /></td>
+            <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()">✕</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 收发日志 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">📋</div>
+        <span class="card-title">通信日志</span>
+        <div style="flex:1"></div>
+        <button class="btn btn-outline btn-sm" onclick="clearLog()">清除</button>
+      </div>
+      <div class="log-area" id="logArea">
+        <div class="log-entry info">[INFO] GH Protocol Web UI 已加载</div>
+        <div class="log-entry info">[INFO] 请先连接设备，然后开始采集</div>
+      </div>
+    </div>
+
+  </section>
+
+</main>
+
+<script>
+/* ===================================================
+ * GH Protocol Web UI — 前端逻辑
+ * 连接后端: http://localhost:8080  (mongoose HTTP+WS)
+ * 数据源: 真实串口设备 或 后端模拟器线程
+ * =================================================== */
+
+/* 动态获取后端地址（与当前页面同主机，支持非localhost）*/
+const BACKEND_HOST = window.location.hostname || 'localhost';
+const BACKEND_PORT = 8080;  /* 与后端 --http 参数一致 */
+const API_BASE     = `http://${BACKEND_HOST}:${BACKEND_PORT}/api`;
+const WS_URL       = `ws://${BACKEND_HOST}:${BACKEND_PORT}/ws`;
+
+/* ============================================================
+ * 状态变量
+ * ============================================================ */
+let ws           = null;
+let wsRetryTimer = null;
+let wsConnected  = false;
+let backendAlive = false;   /* 后端是否在线 */
+let isConnected  = false;   /* 设备是否已连接 */
+let isSampling   = false;
+let frameCount   = 0;
+let waveData     = [];
+let waveChannels = [[], [], [], []]; /* 多通道波形（最多4路）*/
+let activeChannel = 0;              /* 当前显示的通道 */
+const WAVE_MAX   = 400;
+
+/* ============================================================
+ * WebSocket 连接（自动重连，连后端的模拟器或真实设备）
+ * ============================================================ */
+function connectWebSocket() {
+  if (ws) { try { ws.close(); } catch(e){} }
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    wsConnected  = true;
+    backendAlive = true;
+    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+    document.getElementById('wsDot').classList.add('live');
+    document.getElementById('wsLabel').textContent = `后端已连接 (${BACKEND_HOST}:${BACKEND_PORT})`;
+    addLog(`[WS] 连接成功 → ${WS_URL}`, 'info');
+    /* 同步后端状态 */
+    syncDeviceStatus();
+  };
+
+  ws.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+      if (msg.type === 'data') {
+        handleFrame(msg);
+      } else if (msg.type === 'hello') {
+        /* 后端欢迎消息，同步状态 */
+        addLog(`[WS] 后端状态: ${msg.state}`, 'info');
+        if (msg.state === 'connected' || msg.state === 'sampling') {
+          setConnected(true);
+        }
+      }
+    } catch(e) { console.warn('WS parse error:', e); }
+  };
+
+  ws.onclose = (e) => {
+    wsConnected = false;
+    document.getElementById('wsDot').classList.remove('live');
+    document.getElementById('wsLabel').textContent = '后端未连接（自动重试）';
+    if (!e.wasClean) {
+      wsRetryTimer = setTimeout(connectWebSocket, 3000);
+    }
+  };
+
+  ws.onerror = () => {
+    /* 错误后 onclose 也会触发，重连在 onclose 里处理 */
+  };
+}
+
+/* ============================================================
+ * 同步后端设备状态（GET /api/device/status）
+ * ============================================================ */
+async function syncDeviceStatus() {
+  const r = await apiGet('/device/status');
+  if (!r) return;
+  if (r.code === 0 && r.data) {
+    const s = r.data.state;
+    addLog(`[API] 后端设备状态: ${s}`, 'info');
+    /* 如果后端正在模拟器输出数据，也算「已连接」*/
+    if (s === 'connected' || s === 'sampling' || s === 'sim_sampling') {
+      setConnected(true);
+    }
+    /* 更新串口输入框 */
+    if (r.data.port && r.data.port !== 'none') {
+      document.getElementById('portInput').value = r.data.port;
+    }
+    /* 如果是模拟器模式，显示提示 */
+    if (r.data.sim_mode) {
+      addLog('[INFO] 后端运行在模拟器模式（数据为合成PPG波形）', 'info');
+    }
+  }
+}
+
+/* ============================================================
+ * 数据帧到达处理（WebSocket 推送的真实/模拟数据）
+ * ============================================================ */
+function handleFrame(frame) {
+  frameCount++;
+  document.getElementById('metricFrames').textContent = frameCount;
+  document.getElementById('metricFuncID').textContent =
+    frame.func_id !== undefined ? frame.func_id : '--';
+
+  /* 更新心率 */
+  if (frame.hr !== undefined && frame.hr > 0) {
+    document.getElementById('metricHR').innerHTML =
+      frame.hr + '<span class="metric-unit">BPM</span>';
+  }
+
+  /* 更新多通道波形缓冲 */
+  const raw = frame.raw || [];
+  for (let ch = 0; ch < 4; ch++) {
+    const v = raw[ch] !== undefined ? raw[ch] : 0;
+    waveChannels[ch].push(v);
+    if (waveChannels[ch].length > WAVE_MAX) waveChannels[ch].shift();
+  }
+  waveData = waveChannels[activeChannel].slice();  /* 当前显示通道 */
+  drawWaveform();
+}
+
+/* ============================================================
+ * 波形绘制（Canvas）
+ * ============================================================ */
+const CHANNEL_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444'];
+
+function drawWaveform() {
+  const canvas = document.getElementById('waveform');
+  const wrap   = canvas.parentElement;
+  canvas.width  = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const pad = 20;
+
+  ctx.fillStyle = '#0a0a10';
+  ctx.fillRect(0, 0, W, H);
+
+  /* 网格线 */
+  ctx.strokeStyle = 'rgba(99,102,241,0.08)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad + (H - 2*pad) * i / 4;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  /* 无数据时显示提示 */
+  if (waveData.length < 2) {
+    ctx.fillStyle = '#64748b';
+    ctx.font = '14px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('等待数据... 请确认后端服务已运行', W/2, H/2);
+    ctx.textAlign = 'left';
+    return;
+  }
+
+  const min   = Math.min(...waveData);
+  const max   = Math.max(...waveData);
+  const range = (max - min) || 1;
+  const color = CHANNEL_COLORS[activeChannel];
+
+  /* 波形填充区域 */
+  ctx.beginPath();
+  ctx.moveTo(0, H - pad);
+  waveData.forEach((v, i) => {
+    const x = (i / (WAVE_MAX - 1)) * W;
+    const y = H - pad - ((v - min) / range) * (H - 2*pad);
+    ctx.lineTo(x, y);
+  });
+  ctx.lineTo(W, H - pad);
+  ctx.closePath();
+  const fillGrad = ctx.createLinearGradient(0, 0, 0, H);
+  fillGrad.addColorStop(0, color.replace(')', ', 0.15)').replace('rgb', 'rgba'));
+  fillGrad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = fillGrad;
+  ctx.fill();
+
+  /* 波形线 */
+  ctx.beginPath();
+  const lineGrad = ctx.createLinearGradient(0, 0, W, 0);
+  lineGrad.addColorStop(0, color + '44');
+  lineGrad.addColorStop(0.5, color);
+  lineGrad.addColorStop(1, color);
+  ctx.strokeStyle = lineGrad;
+  ctx.lineWidth = 2;
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = color;
+  waveData.forEach((v, i) => {
+    const x = (i / (WAVE_MAX - 1)) * W;
+    const y = H - pad - ((v - min) / range) * (H - 2*pad);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  /* 当前值标签 */
+  const lastV = waveData[waveData.length - 1];
+  const lastY = H - pad - ((lastV - min) / range) * (H - 2*pad);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 11px JetBrains Mono, monospace';
+  ctx.fillText(lastV.toFixed(0), W - 60, Math.max(lastY - 8, pad + 10));
+}
+
+function clearWave() {
+  waveData = [];
+  waveChannels = [[], [], [], []];
+  frameCount = 0;
+  document.getElementById('metricFrames').textContent = '0';
+  drawWaveform();
+}
+
+/* ============================================================
+ * API 调用工具函数
+ * ============================================================ */
+async function apiPost(endpoint, body) {
+  try {
+    const res = await fetch(API_BASE + endpoint, {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body   : JSON.stringify(body),
+      signal : AbortSignal.timeout(5000)  /* 5秒超时 */
+    });
+    return await res.json();
+  } catch(e) {
+    addLog(`[API] ${endpoint} 失败: ${e.message}`, 'err');
+    return null;
+  }
+}
+
+async function apiGet(endpoint) {
+  try {
+    const res = await fetch(API_BASE + endpoint, {
+      signal: AbortSignal.timeout(3000)
+    });
+    return await res.json();
+  } catch(e) {
+    /* 静默失败（后端未启动时频繁轮询会刷屏）*/
+    return null;
+  }
+}
+
+/* ============================================================
+ * 设备连接/断开
+ * ============================================================ */
+async function toggleConnect() {
+  if (!wsConnected) {
+    addLog('[ERR] 后端未连接，请先启动后端服务', 'err');
+    addLog('[INFO] 运行: cd build && ./gh_backend --sim', 'info');
+    return;
+  }
+  if (!isConnected) {
+    const port = document.getElementById('portInput').value.trim();
+    const baud = parseInt(document.getElementById('baudSelect').value);
+    addLog(`[SEND] POST /api/device/connect {"port":"${port}","baud_rate":${baud}}`, 'send');
+    const r = await apiPost('/device/connect', { port, baud_rate: baud });
+    if (r && r.code === 0) {
+      setConnected(true);
+      addLog('[RECV] 设备连接成功', 'recv');
+    } else {
+      addLog('[ERR] 连接失败: ' + (r?.msg ?? '超时'), 'err');
+    }
+  } else {
+    await apiPost('/device/disconnect', {});
+    setConnected(false);
+    addLog('[INFO] 已断开', 'info');
+  }
+}
+
+function setConnected(connected) {
+  isConnected = connected;
+  const badge    = document.getElementById('statusBadge');
+  const label    = document.getElementById('statusLabel');
+  const btn      = document.getElementById('connectBtn');
+  const startBtn = document.getElementById('startBtn');
+  if (connected) {
+    badge.className = 'status-badge connected';
+    label.textContent = '已连接';
+    btn.textContent  = '🔌 断开连接';
+    btn.className    = 'btn btn-danger btn-full';
+    startBtn.disabled = false;
+  } else {
+    badge.className = 'status-badge';
+    label.textContent = '未连接';
+    btn.textContent  = '🔗 连接设备';
+    btn.className    = 'btn btn-primary btn-full';
+    startBtn.disabled = true;
+    document.getElementById('stopBtn').disabled = true;
+    isSampling = false;
+  }
+}
+
+/* ============================================================
+ * 采集控制
+ * ============================================================ */
+async function startSampling() {
+  let funcMask = 0;
+  document.querySelectorAll('.func-check input[type=checkbox]:checked').forEach(cb => {
+    funcMask |= parseInt(cb.value, 16);
+  });
+  if (funcMask === 0) funcMask = 0x02;  /* 默认心率 */
+  const mode = parseInt(document.getElementById('modeSelect').value);
+  addLog(`[SEND] POST /api/device/start ctrl=0 mode=${mode} func_mask=0x${funcMask.toString(16)}`, 'send');
+  const r = await apiPost('/device/start', { ctrl: 0, mode, func_mask: funcMask });
+  if (r && r.code === 0) {
+    isSampling = true;
+    document.getElementById('startBtn').disabled = true;
+    document.getElementById('stopBtn').disabled  = false;
+    document.getElementById('statusBadge').className = 'status-badge sampling';
+    document.getElementById('statusLabel').textContent = '采集中';
+    addLog('[RECV] 采集已启动', 'recv');
+  } else {
+    addLog('[ERR] 采集启动失败: ' + (r?.msg ?? '超时'), 'err');
+  }
+}
+
+async function stopSampling() {
+  addLog('[SEND] POST /api/device/start ctrl=1 (stop)', 'send');
+  const r = await apiPost('/device/start', { ctrl: 1, mode: 0, func_mask: 0 });
+  if (r && r.code === 0) {
+    isSampling = false;
+    document.getElementById('startBtn').disabled = false;
+    document.getElementById('stopBtn').disabled  = true;
+    document.getElementById('statusBadge').className = 'status-badge connected';
+    document.getElementById('statusLabel').textContent = '已连接';
+    addLog('[RECV] 采集已停止', 'recv');
+  }
+}
+
+/* ============================================================
+ * 加载串口列表
+ * ============================================================ */
+async function loadSerialList() {
+  const r = await apiGet('/serial/list');
+  if (!r || r.code !== 0) return;
+  const sel  = document.getElementById('portInput');
+  const list = document.getElementById('portDatalist');
+  if (!list) {
+    const dl = document.createElement('datalist');
+    dl.id = 'portDatalist';
+    sel.setAttribute('list', 'portDatalist');
+    sel.parentElement.appendChild(dl);
+    if (Array.isArray(r.data)) {
+      r.data.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p;
+        dl.appendChild(opt);
+      });
+      if (r.data.length > 0 && !sel.value) sel.value = r.data[0];
+      addLog(`[API] 检测到 ${r.data.length} 个串口`, 'info');
+    }
+  }
+}
+
+/* ============================================================
+ * 寄存器配置下发
+ * ============================================================ */
+function addRegRow() {
+  const tbody = document.getElementById('regTableBody');
+  const tr    = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input class="reg-input" placeholder="0x0102" /></td>
+    <td><input class="reg-input" placeholder="0x0001" /></td>
+    <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()">✕</button></td>`;
+  tbody.appendChild(tr);
+}
+
+async function sendConfig() {
+  const regs = [];
+  document.querySelectorAll('#regTableBody tr').forEach(row => {
+    const inputs = row.querySelectorAll('input');
+    if (inputs.length >= 2) {
+      const addr = parseInt(inputs[0].value, 16);
+      const data = parseInt(inputs[1].value, 16);
+      if (!isNaN(addr) && !isNaN(data)) regs.push({ addr, data });
+    }
+  });
+  if (!regs.length) { addLog('[ERR] 无有效寄存器配置', 'err'); return; }
+  addLog(`[SEND] POST /api/device/config regs[${regs.length}]`, 'send');
+  const r = await apiPost('/device/config', { regs });
+  if (r && r.code === 0) addLog('[RECV] 配置下发成功', 'recv');
+  else addLog('[ERR] 配置下发失败: ' + (r?.msg ?? '超时'), 'err');
+}
+
+/* ============================================================
+ * 日志
+ * ============================================================ */
+function addLog(msg, type='info') {
+  const area = document.getElementById('logArea');
+  const ts   = new Date().toLocaleTimeString('zh', { hour12: false });
+  const div  = document.createElement('div');
+  div.className   = `log-entry ${type}`;
+  div.textContent = `[${ts}] ${msg}`;
+  area.appendChild(div);
+  area.scrollTop  = area.scrollHeight;
+  while (area.children.length > 500) area.removeChild(area.firstChild);
+}
+
+function clearLog() { document.getElementById('logArea').innerHTML = ''; }
+
+/* ============================================================
+ * 后端存活检测（每5秒轮询 /api/device/status）
+ * 在 WebSocket 已连接时跳过
+ * ============================================================ */
+async function checkBackend() {
+  if (wsConnected) return;
+  const r = await apiGet('/device/status');
+  if (r && r.code === 0) {
+    if (!backendAlive) {
+      backendAlive = true;
+      addLog('[INFO] 后端服务检测到，正在连接 WebSocket...', 'info');
+      connectWebSocket();
+    }
+  } else {
+    if (backendAlive) {
+      backendAlive = false;
+      addLog('[WARN] 后端服务未响应，请检查是否运行', 'err');
+    }
+  }
+}
+
+/* ============================================================
+ * 初始化
+ * ============================================================ */
+window.addEventListener('DOMContentLoaded', () => {
+  drawWaveform();
+
+  addLog('[INFO] GH Protocol UI 已加载', 'info');
+  addLog(`[INFO] 后端地址: http://${BACKEND_HOST}:${BACKEND_PORT}`, 'info');
+  addLog('[INFO] 正在连接后端 WebSocket...', 'info');
+
+  /* 1. 立即尝试 WebSocket */
+  connectWebSocket();
+
+  /* 2. 每5秒检测后端（WebSocket断开时的备用恢复）*/
+  setInterval(checkBackend, 5000);
+
+  /* 3. 成功后加载串口列表 */
+  setTimeout(() => {
+    if (wsConnected) loadSerialList();
+    else addLog('[WARN] 后端未连接。请运行: cd refactor_output/build && ./gh_backend', 'err');
+  }, 2500);
+});
+
+window.addEventListener('resize', drawWaveform);
+</script>
+</body>
+</html>
