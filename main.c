@@ -67,8 +67,15 @@ static void s_on_data_frame(const gh_data_frame_t *frame, void *ctx) {
 }
 
 static void s_on_log(const char *msg, void *ctx) {
-    (void)ctx;
+    gh_api_t *api = (gh_api_t *)ctx;
     printf("%s\n", msg);
+    if (api && msg) {
+        /* 根据前缀判断方向，推送到前端调试窗口 */
+        const char *dir = "info";
+        if (msg[0] == '[' && msg[1] == 'T' && msg[2] == 'X' && msg[3] == ']') dir = "tx";
+        else if (msg[0] == '[' && msg[1] == 'R' && msg[2] == 'X' && msg[3] == ']') dir = "rx";
+        gh_api_push_log(api, msg, dir);
+    }
 }
 
 /* ============================================================
@@ -210,7 +217,7 @@ int main(int argc, char *argv[]) {
     gh_service_init(&g_service,
                     s_on_device_state, NULL,
                     s_on_data_frame,   &g_api,   /* 真实数据 → 推送到 API */
-                    s_on_log,          NULL);
+                    s_on_log,          &g_api);  /* 日志 → 推送到 API 调试窗口 */
 
     /* ----- 尝试连接串口 ----- */
     if (port && !use_sim) {

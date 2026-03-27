@@ -287,6 +287,27 @@
       display: block;
     }
 
+    /* 串口调试面板 */
+    .serial-debug-area {
+      height: 220px;
+      overflow-y: auto;
+      background: #08080e;
+      border-radius: 8px;
+      padding: 0.75rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      line-height: 1.7;
+      border: 1px solid rgba(99,102,241,0.12);
+    }
+    .serial-debug-area::-webkit-scrollbar { width: 4px; }
+    .serial-debug-area::-webkit-scrollbar-track { background: transparent; }
+    .serial-debug-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .debug-entry { color: var(--text-muted); word-break: break-all; }
+    .debug-entry.tx { color: #86efac; }   /* 绿色 = 发送 */
+    .debug-entry.rx { color: #67e8f9; }   /* 青色 = 接收 */
+    .debug-entry.info { color: #c4b5fd; } /* 紫色 = 信息 */
+    .debug-ts { color: #4b5563; margin-right: 6px; }
+
     /* 数据日志 */
     .log-area {
       height: 180px;
@@ -478,6 +499,13 @@
       </div>
 
       <div class="form-group" style="display:flex; gap:0.5rem; align-items:center;">
+        <label class="form-label" style="width:60px;">协议选择</label>
+        <select class="form-select" id="protocolSelect" style="flex:1" onchange="setProtocol()">
+          <option value="Chelsea_A" selected>Chelsea A</option>
+        </select>
+      </div>
+
+      <div class="form-group" style="display:flex; gap:0.5rem; align-items:center;">
         <label class="form-label" style="width:60px;">模式选择</label>
         <select class="form-select" id="workModeSelect" style="flex:1" onchange="setWorkMode()">
           <option value="0" selected>Mcu Online Work Mode</option>
@@ -597,6 +625,28 @@
       </table>
     </div>
 
+    <!-- 串口调试窗口 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">🔬</div>
+        <span class="card-title">串口调试</span>
+        <div style="flex:1"></div>
+        <label style="font-size:0.72rem; color:var(--text-muted); display:flex; align-items:center; gap:4px; margin-right:6px;">
+          <input type="checkbox" id="debugAutoScroll" checked style="accent-color:var(--primary);"> 自动滚动
+        </label>
+        <label style="font-size:0.72rem; color:var(--text-muted); display:flex; align-items:center; gap:4px; margin-right:6px;">
+          <input type="checkbox" id="debugShowTx" checked style="accent-color:#86efac;"> TX
+        </label>
+        <label style="font-size:0.72rem; color:var(--text-muted); display:flex; align-items:center; gap:4px; margin-right:6px;">
+          <input type="checkbox" id="debugShowRx" checked style="accent-color:#67e8f9;"> RX
+        </label>
+        <button class="btn btn-outline btn-sm" onclick="clearDebug()">清除</button>
+      </div>
+      <div class="serial-debug-area" id="debugArea">
+        <div class="debug-entry info"><span class="debug-ts">--:--:--</span>等待串口收发数据...</div>
+      </div>
+    </div>
+
     <!-- 收发日志 -->
     <div class="card">
       <div class="card-header">
@@ -672,6 +722,23 @@ function connectWebSocket() {
         if (msg.state === 'connected' || msg.state === 'sampling') {
           setConnected(true);
         }
+      } else if (msg.type === 'log') {
+        /* 串口调试：原始 TX/RX 字节 */
+        addDebugEntry(msg.text, msg.dir || 'info');
+        /* 版本信息响应：service 层解析后以 [VERSION] 前缀推送 */
+        if (msg.text && msg.text.startsWith('[VERSION] ')) {
+          const verStr = msg.text.substring(10);
+          document.getElementById('versionText').innerText = verStr;
+          addLog(`[版本] ${verStr}`, 'recv');
+        }
+        /* 寄存器读响应：[REG_VAL] 0xVAL0 0xVAL1 ... */
+        if (msg.text && msg.text.startsWith('[REG_VAL]')) {
+          const parts = msg.text.substring(9).trim().split(/\s+/).filter(Boolean);
+          const dispStr = parts.length === 1 ? parts[0]
+                        : parts.map((v, i) => `[${i}]${v}`).join('  ');
+          document.getElementById('readRegValDisplay').innerText = dispStr;
+          addLog(`[寄存器] 读取结果: ${dispStr}`, 'recv');
+        }
       }
     } catch(e) { console.warn('WS parse error:', e); }
   };
@@ -743,25 +810,45 @@ function handleFrame(frame) {
 /* ============================================================
  * 高级控制 API (工作模式、获取版本、芯片控制、读寄存器)
  * ============================================================ */
+async function setProtocol() {
+  const p = document.getElementById('protocolSelect').value;
+  const data = await apiPost('/device/protocol', { protocol: p });
+  if (data && data.code === 0) {
+    addLog(`[控制] 已将底层解析引擎切换至: ${p.replace('_', ' ')}`, 'info');
+  } else {
+    addLog(`[ERR] 协议切换失败: ${data?.msg || '网络错误'}`, 'err');
+  }
+}
+
 async function setWorkMode() {
   const mode = parseInt(document.getElementById('workModeSelect').value);
   const data = await apiPost('/device/work_mode', { mode: mode, func_mask: 0xFFFFFFFF });
-  if (data && data.sent) addLog(`[发送] 设置工作模式为: ${mode === 0 ? 'MCU Online' : 'Auto Pass Through'}`, 'send');
+  if (data && data.code === 0) {
+    addLog(`[发送] 设置工作模式为: ${mode === 0 ? 'MCU Online' : 'Auto Pass Through'}`, 'send');
+  } else {
+    addLog(`[ERR] 设置工作模式失败: ${data?.msg || '设备未连接'}`, 'err');
+  }
 }
 
 async function getVersion() {
   const data = await apiGet('/device/version');
-  if (data && data.sent) {
-    addLog(`[发送] 请求获取版本信息`, 'send');
-    document.getElementById('versionText').innerText = "Waiting for response...";
+  if (data && data.code === 0) {
+    addLog(`[发送] 请求获取版本信息 (CMD=0x19)`, 'send');
+    document.getElementById('versionText').innerText = "等待设备响应...";
+  } else {
+    const errMsg = data?.msg || '网络错误';
+    addLog(`[ERR] 查询版本失败: ${errMsg}`, 'err');
+    document.getElementById('versionText').innerText = `错误: ${errMsg}`;
   }
 }
 
 async function sendChipCtrl() {
   const ctrl = parseInt(document.getElementById('chipCtrlSelect').value);
   const data = await apiPost('/device/chip_ctrl', { ctrl_val: ctrl });
-  if (data && data.sent) {
+  if (data && data.code === 0) {
     addLog(`[发送] 芯片控制命令: 0x${ctrl.toString(16).toUpperCase()}`, 'send');
+  } else {
+    addLog(`[ERR] 芯片控制失败: ${data?.msg || '设备未连接'}`, 'err');
   }
 }
 
@@ -770,9 +857,11 @@ async function readRegister() {
   const addr = parseInt(addrHex, 16);
   if (isNaN(addr)) return;
   const data = await apiPost('/device/read_reg', { addr: addr, count: 1 });
-  if (data && data.sent) {
+  if (data && data.code === 0) {
     addLog(`[发送] 请求读取寄存器地址 0x${addrHex.toUpperCase()}`, 'send');
-    document.getElementById('readRegValDisplay').innerText = "Wait...";
+    document.getElementById('readRegValDisplay').innerText = "等待响应...";
+  } else {
+    addLog(`[ERR] 读寄存器失败: ${data?.msg || '设备未连接'}`, 'err');
   }
 }
 
@@ -786,10 +875,10 @@ async function writeSingleRegister() {
     return;
   }
   const data = await apiPost('/device/config', { regs: [{ addr: addr, data: val }] });
-  if (data && data.sent) {
+  if (data && data.code === 0) {
     addLog(`[发送] 单个寄存器下发: [0x${addr.toString(16).toUpperCase()}] = 0x${val.toString(16).toUpperCase()}`, 'send');
   } else {
-    addLog('[ERR] 发送失败: 设备未连接', 'err');
+    addLog(`[ERR] 寄存器写入失败: ${data?.msg || '设备未连接'}`, 'err');
   }
 }
 
@@ -1119,6 +1208,42 @@ function addLog(msg, type='info') {
 }
 
 function clearLog() { document.getElementById('logArea').innerHTML = ''; }
+
+/* ============================================================
+ * 串口调试窗口
+ * ============================================================ */
+function addDebugEntry(text, dir) {
+  const showTx = document.getElementById('debugShowTx')?.checked !== false;
+  const showRx = document.getElementById('debugShowRx')?.checked !== false;
+  if (dir === 'tx' && !showTx) return;
+  if (dir === 'rx' && !showRx) return;
+
+  const area = document.getElementById('debugArea');
+  if (!area) return;
+
+  const ts = new Date().toLocaleTimeString('zh', { hour12: false,
+    hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const div = document.createElement('div');
+  div.className = `debug-entry ${dir}`;
+  div.innerHTML = `<span class="debug-ts">${ts}</span>${escapeHtml(text)}`;
+  area.appendChild(div);
+
+  const autoScroll = document.getElementById('debugAutoScroll');
+  if (!autoScroll || autoScroll.checked) {
+    area.scrollTop = area.scrollHeight;
+  }
+  /* 最多保留 300 条 */
+  while (area.children.length > 300) area.removeChild(area.firstChild);
+}
+
+function clearDebug() {
+  const area = document.getElementById('debugArea');
+  if (area) area.innerHTML = '';
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
 
 /* ============================================================
  * 后端存活检测（每5秒轮询 /api/device/status）

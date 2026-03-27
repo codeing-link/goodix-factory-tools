@@ -72,6 +72,8 @@ typedef struct {
     gh_serial_config_t serial_cfg; /* 串口配置 */
 
     gh_device_state_t device_state; /* 当前设备状态 */
+    bool              use_chelsea_a_parser; /* 区分采用 Cardiff 还是 Chelsea 解包 */
+    uint8_t           rpc_com_id;           /* Cardiff RPC sall 通信ID计数器 */
 
     /* 向 API 层的回调 */
     gh_svc_on_state_cb on_state;

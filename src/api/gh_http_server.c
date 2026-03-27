@@ -109,6 +109,33 @@ static void s_reply_err(struct mg_connection *c, int code, const char *msg) {
 }
 
 /* ============================================================
+ * 内部辅助：WebSocket 广播日志消息
+ * ============================================================ */
+static void s_ws_broadcast_log(struct mg_mgr *mgr, const gh_log_msg_t *msg) {
+    char json[GH_API_LOG_MAX_LEN + 64];
+    /* 对 text 中的双引号进行简单转义 */
+    char escaped[GH_API_LOG_MAX_LEN * 2];
+    size_t j = 0;
+    for (size_t i = 0; msg->text[i] && j < sizeof(escaped) - 2; i++) {
+        if (msg->text[i] == '"' || msg->text[i] == '\\') {
+            escaped[j++] = '\\';
+        }
+        escaped[j++] = msg->text[i];
+    }
+    escaped[j] = '\0';
+
+    int len = snprintf(json, sizeof(json),
+        "{\"type\":\"log\",\"dir\":\"%s\",\"text\":\"%s\"}",
+        msg->dir, escaped);
+
+    for (struct mg_connection *wc = mgr->conns; wc != NULL; wc = wc->next) {
+        if (wc->data[0] == WS_MARK) {
+            mg_ws_send(wc, json, (size_t)len, WEBSOCKET_OP_TEXT);
+        }
+    }
+}
+
+/* ============================================================
  * 内部辅助：WebSocket 广播
  * ============================================================ */
 
@@ -412,6 +439,24 @@ static void s_handle_serial_list(struct mg_connection *c,
 #endif
 }
 
+static void s_handle_protocol(struct mg_connection *c,
+                              struct mg_http_message *hm,
+                              gh_api_t *api) {
+    char prot[64] = {0};
+    if (s_json_str(hm->body.buf, hm->body.len, "protocol", prot, sizeof(prot))) {
+        if (api->service) {
+            if (strcmp(prot, "Chelsea_A") == 0) {
+                api->service->use_chelsea_a_parser = true;
+            } else {
+                api->service->use_chelsea_a_parser = false;
+            }
+            s_reply_ok(c, "{\"success\":true}");
+            return;
+        }
+    }
+    s_reply_err(c, -1, "invalid_protocol");
+}
+
 /* ============================================================
  * 内部辅助：URL 精确匹配（及前缀匹配）
  * 替代 mg_http_match_uri（mongoose 7.x 和 8.x 行为不一）
@@ -486,6 +531,8 @@ static void s_mongoose_handler(struct mg_connection *c,
             s_handle_get_version(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/read_reg")) {
             s_handle_read_reg(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/device/protocol")) {
+            s_handle_protocol(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/data")) {
             s_handle_get_data(c, hm, api);
         } else if (s_uri_eq(hm, "/api/serial/list")) {
@@ -545,6 +592,12 @@ bool gh_api_init(gh_api_t *api, gh_service_t *service,
     api->queue.tail  = 0;
     api->queue.count = 0;
 
+    /* 初始化日志队列 */
+    GH_MUTEX_INIT(&api->log_queue.lock);
+    api->log_queue.head  = 0;
+    api->log_queue.tail  = 0;
+    api->log_queue.count = 0;
+
     /* 分配并初始化 mg_mgr */
     struct mg_mgr *mgr = (struct mg_mgr *)malloc(sizeof(struct mg_mgr));
     if (!mgr) return false;
@@ -594,6 +647,20 @@ void gh_api_run(gh_api_t *api) {
             GH_MUTEX_LOCK(&api->queue.lock);
         }
         GH_MUTEX_UNLOCK(&api->queue.lock);
+
+        /* 3. Drain 日志队列，广播到所有 WebSocket 客户端（调试窗口）*/
+        GH_MUTEX_LOCK(&api->log_queue.lock);
+        while (api->log_queue.count > 0) {
+            gh_log_msg_t lmsg = api->log_queue.msgs[api->log_queue.head];
+            api->log_queue.head = (api->log_queue.head + 1) % GH_API_LOG_QUEUE_SIZE;
+            api->log_queue.count--;
+            GH_MUTEX_UNLOCK(&api->log_queue.lock);
+
+            s_ws_broadcast_log(mgr, &lmsg);
+
+            GH_MUTEX_LOCK(&api->log_queue.lock);
+        }
+        GH_MUTEX_UNLOCK(&api->log_queue.lock);
     }
 }
 
@@ -618,6 +685,24 @@ void gh_api_push_frame(gh_api_t *api, const gh_data_frame_t *frame) {
     GH_MUTEX_UNLOCK(&api->queue.lock);
 }
 
+void gh_api_push_log(gh_api_t *api, const char *text, const char *dir) {
+    if (!api || !text || !dir) return;
+    GH_MUTEX_LOCK(&api->log_queue.lock);
+    /* 队列满时覆盖最旧的 */
+    if (api->log_queue.count >= GH_API_LOG_QUEUE_SIZE) {
+        api->log_queue.head = (api->log_queue.head + 1) % GH_API_LOG_QUEUE_SIZE;
+        api->log_queue.count--;
+    }
+    gh_log_msg_t *slot = &api->log_queue.msgs[api->log_queue.tail];
+    strncpy(slot->text, text, GH_API_LOG_MAX_LEN - 1);
+    slot->text[GH_API_LOG_MAX_LEN - 1] = '\0';
+    strncpy(slot->dir, dir, sizeof(slot->dir) - 1);
+    slot->dir[sizeof(slot->dir) - 1] = '\0';
+    api->log_queue.tail = (api->log_queue.tail + 1) % GH_API_LOG_QUEUE_SIZE;
+    api->log_queue.count++;
+    GH_MUTEX_UNLOCK(&api->log_queue.lock);
+}
+
 void gh_api_destroy(gh_api_t *api) {
     if (!api) return;
     if (api->mgr) {
@@ -626,4 +711,5 @@ void gh_api_destroy(gh_api_t *api) {
         api->mgr = NULL;
     }
     GH_MUTEX_DESTROY(&api->queue.lock);
+    GH_MUTEX_DESTROY(&api->log_queue.lock);
 }

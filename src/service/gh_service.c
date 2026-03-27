@@ -6,6 +6,8 @@
 #include "gh_service.h"
 #include <string.h>
 #include <stdio.h>
+#include "../protocol/chelsea_a/gh_data_package_decode.h"
+#include "../protocol/gh_rpc.h"
 #include <time.h>
 
 /* ============================================================
@@ -17,11 +19,167 @@ static void s_on_transport_frame(const uint8_t* frame, uint16_t len, void* ctx) 
     gh_service_t* svc = (gh_service_t*)ctx;
     if (!svc || !frame || len < 4) return;
 
-    /* 跳过外层 0xAA11 帧头，送入协议解析器 */
-    const uint8_t* inner_pkt = frame + 2;
-    uint16_t       inner_len = len - 2;
+    if (svc->use_chelsea_a_parser) {
+        /* Chelsea A 解包流程：
+         * 1. 解析 Cardiff RPC 帧，提取 key 和 params
+         * 2. 若 key == "G"（DealFrameDataProcess），提取 u8* 数组传给 gh_protocol_process
+         * 3. 其他 key（如 sall 响应）记录日志
+         */
+        char rpc_key[64];
+        const uint8_t *rpc_params = NULL;
+        int rpc_params_len = 0;
 
-    gh_parse_packet(&svc->parser, inner_pkt, inner_len);
+        if (!gh_rpc_parse_frame(frame, (int)len,
+                                rpc_key, (int)sizeof(rpc_key),
+                                &rpc_params, &rpc_params_len)) {
+            /* CRC 校验失败或帧格式不对，丢弃 */
+            if (svc->on_log) svc->on_log("[RPC] Frame parse/CRC error", svc->on_log_ctx);
+            return;
+        }
+
+        if (rpc_key[0] == 'G' && rpc_key[1] == '\0') {
+            /* 设备发送传感器数据帧 (key="G") */
+            const uint8_t *raw_data = NULL;
+            int raw_len = 0;
+            if (!gh_rpc_extract_u8_array(rpc_params, rpc_params_len, &raw_data, &raw_len)
+                || !raw_data || raw_len <= 0) {
+                if (svc->on_log) svc->on_log("[RPC] key=G: no u8* array found", svc->on_log_ctx);
+                return;
+            }
+
+            static gh_func_frame_t chelsea_frames[16];
+            static uint32_t chelsea_algo_res[16 * 16];
+            static gh_frame_data_t chelsea_frame_data[16 * 32];
+            static bool chelsea_init = false;
+
+            if (!chelsea_init) {
+                for (int i = 0; i < 16; i++) {
+                    memset(&chelsea_frames[i], 0, sizeof(gh_func_frame_t));
+                    chelsea_frames[i].p_data = &chelsea_frame_data[i * 32];
+                    chelsea_frames[i].p_algo_res = &chelsea_algo_res[i * 16];
+                }
+                chelsea_init = true;
+            }
+
+            gh_func_frame_t* p_frames = chelsea_frames;
+            uint8_t parsed_len = 0;
+
+            gh_protocol_process(&p_frames, &parsed_len, (uint8_t*)raw_data, (uint32_t)raw_len);
+
+        for (uint8_t i = 0; i < parsed_len; i++) {
+            gh_data_frame_t data;
+            memset(&data, 0, sizeof(data));
+            data.func_id = p_frames[i].id;
+            data.frame_cnt = p_frames[i].frame_cnt;
+            
+            /* 映射原始数据 */
+            for (int ch = 0; ch < p_frames[i].ch_num && ch < 32; ch++) {
+                data.raw_data[ch] = p_frames[i].p_data[ch].rawdata;
+            }
+            
+            /* G-sensor 映射 */
+            data.gsensor[0] = p_frames[i].gsensor_data.acc[0];
+            data.gsensor[1] = p_frames[i].gsensor_data.acc[1];
+            data.gsensor[2] = p_frames[i].gsensor_data.acc[2];
+            
+            /* 算法结果（这里简单取第一个值做 HR 的表示，可根据具体的 id 扩展结构体投射）*/
+            if (p_frames[i].p_algo_res) {
+                 if (data.func_id == GH_FUNC_FIX_IDX_HR) {
+                     gh_algo_hr_result_t *p_hr = (gh_algo_hr_result_t *)p_frames[i].p_algo_res;
+                     data.algo_result[0] = p_hr->hba_out;
+                     data.algo_result_num = 1;
+                 }
+            }
+
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            data.timestamp_ms = (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
+
+            if (svc->on_data) {
+                svc->on_data(&data, svc->on_data_ctx);
+            }
+        }
+        } else if (strcmp(rpc_key, "GH3X_GetVersion") == 0 && rpc_params != NULL) {
+            /* GH3X_GetVersion 响应：解析 u8* 字符串参数，提取版本字符串
+             * 参数格式：[TypeData_scalar...][TypeArray_u8* count data...]
+             * 跳过所有标量参数，找到第一个数组参数即为版本字符串
+             */
+            char ver_str[256];
+            bool ver_found = false;
+            int pi = 0;
+
+            while (pi < rpc_params_len && !ver_found) {
+                if (pi >= rpc_params_len) break;
+                uint8_t type_b   = rpc_params[pi++];
+                uint8_t is_arr   = (type_b >> 2) & 0x01U;
+                uint8_t end_b    = (type_b >> 6) & 0x01U;
+                int     width_b  = (1 << ((type_b >> 3) & 0x07U)) / 8; /* 每元素字节数 */
+                if (width_b < 1) width_b = 1;
+
+                if (is_arr) {
+                    /* 数组：[count: 1 byte][data...] */
+                    if (pi >= rpc_params_len) break;
+                    int count = (int)rpc_params[pi++];
+                    int total = count * width_b;
+                    if (pi + total > rpc_params_len) break;
+                    int copy = (total < (int)sizeof(ver_str) - 1) ? total : (int)sizeof(ver_str) - 1;
+                    memcpy(ver_str, &rpc_params[pi], (size_t)copy);
+                    ver_str[copy] = '\0';
+                    /* 按 null 截断（设备发的字符串有 null 结尾）*/
+                    for (int j = 0; j < copy; j++) {
+                        if (ver_str[j] == '\0') break;
+                    }
+                    ver_found = true;
+                } else {
+                    /* 标量：跳过值字节 */
+                    if (pi + width_b > rpc_params_len) break;
+                    pi += width_b;
+                }
+                if (end_b) break;
+            }
+
+            if (ver_found && svc->on_log) {
+                char log_buf[320];
+                snprintf(log_buf, sizeof(log_buf), "[VERSION] %s", ver_str);
+                svc->on_log(log_buf, svc->on_log_ctx);
+            } else {
+                /* 解析失败，至少记录收到了响应 */
+                char log_buf[128];
+                snprintf(log_buf, sizeof(log_buf), "[RPC] RX GH3X_GetVersion params_len=%d (parse failed)", rpc_params_len);
+                if (svc->on_log) svc->on_log(log_buf, svc->on_log_ctx);
+            }
+        } else if (strcmp(rpc_key, "GH3X_RegsReadCmd") == 0 && rpc_params != NULL) {
+            /* 寄存器读响应：提取 u16* 数组，推送给前端 */
+            uint16_t vals[64];
+            int num_vals = 0;
+            if (gh_rpc_extract_u16_array(rpc_params, rpc_params_len, vals, 64, &num_vals)
+                && num_vals > 0 && svc->on_log) {
+                /* 格式: [REG_VAL] 0xVAL0,0xVAL1,...  前端据此更新寄存器显示 */
+                char log_buf[256];
+                int off = snprintf(log_buf, sizeof(log_buf), "[REG_VAL]");
+                for (int vi = 0; vi < num_vals && off < (int)sizeof(log_buf) - 8; vi++) {
+                    off += snprintf(log_buf + off, sizeof(log_buf) - (size_t)off,
+                                   " 0x%04X", vals[vi]);
+                }
+                svc->on_log(log_buf, svc->on_log_ctx);
+            } else {
+                char log_buf[128];
+                snprintf(log_buf, sizeof(log_buf),
+                         "[RPC] RX GH3X_RegsReadCmd params_len=%d (no u16 array)", rpc_params_len);
+                if (svc->on_log) svc->on_log(log_buf, svc->on_log_ctx);
+            }
+        } else {
+            /* 其他 key：sall 响应等，记录日志 */
+            char log_buf[128];
+            snprintf(log_buf, sizeof(log_buf), "[RPC] RX key=\"%s\" params_len=%d", rpc_key, rpc_params_len);
+            if (svc->on_log) svc->on_log(log_buf, svc->on_log_ctx);
+        }
+    } else {
+        /* 原 Cardiff A 流程 */
+        const uint8_t* inner_pkt = frame + 2;
+        uint16_t       inner_len = len - 2;
+        gh_parse_packet(&svc->parser, inner_pkt, inner_len);
+    }
 }
 
 /* ============================================================
@@ -62,6 +220,41 @@ static void s_protocol_send(const uint8_t* data, uint16_t len, void* ctx) {
     gh_service_t* svc = (gh_service_t*)ctx;
     if (!svc) return;
     gh_transport_send(&svc->transport, data, len);
+}
+
+/* ============================================================
+ * 内部：Chelsea A / Cardiff RPC 帧发送辅助
+ * ============================================================ */
+
+/**
+ * @brief 发送 Cardiff RPC send 帧（无需设备响应）
+ */
+static bool s_rpc_send(gh_service_t* svc,
+                       const char *key,
+                       const uint8_t *params, int params_len) {
+    uint8_t frame[GH_RPC_FRAME_MAX];
+    int n = gh_rpc_build_frame(frame, (int)sizeof(frame),
+                               false, 0,
+                               key, params, params_len);
+    if (n <= 0) return false;
+    gh_transport_send(&svc->transport, frame, (uint16_t)n);
+    return true;
+}
+
+/**
+ * @brief 发送 Cardiff RPC sall 帧（期望设备响应，自动递增 com_id）
+ */
+static bool s_rpc_sall(gh_service_t* svc,
+                       const char *key,
+                       const uint8_t *params, int params_len) {
+    uint8_t frame[GH_RPC_FRAME_MAX];
+    uint8_t com_id = svc->rpc_com_id++;
+    int n = gh_rpc_build_frame(frame, (int)sizeof(frame),
+                               true, com_id,
+                               key, params, params_len);
+    if (n <= 0) return false;
+    gh_transport_send(&svc->transport, frame, (uint16_t)n);
+    return true;
 }
 
 /* ============================================================
@@ -106,6 +299,8 @@ void gh_service_init(gh_service_t* svc,
     svc->on_log       = on_log;
     svc->on_log_ctx   = log_ctx;
     svc->device_state = GH_DEV_STATE_DISCONNECTED;
+    svc->use_chelsea_a_parser = true; /* Chelsea A 为默认协议 */
+    svc->rpc_com_id   = 0;
 
     /* 初始化默认串口配置 */
     strncpy(svc->serial_cfg.port, "/dev/ttyUSB0", sizeof(svc->serial_cfg.port));
@@ -160,7 +355,25 @@ bool gh_service_is_connected(const gh_service_t* svc) {
 bool gh_service_start_hbd(gh_service_t* svc,
                            uint8_t ctrl_bit, uint8_t mode, uint32_t func_mask) {
     if (!svc || !gh_service_is_connected(svc)) return false;
-    bool ret = gh_cmd_start_hbd(&svc->parser, ctrl_bit, mode, func_mask);
+    bool ret;
+    if (svc->use_chelsea_a_parser) {
+        /* Chelsea A: GH3X_SwFunctionCmd(func_mask: u32, ctrl: u8)
+         * ctrl_bit=0 → start (ctrl=1), ctrl_bit=1 → stop (ctrl=0) */
+        uint8_t params[GH_RPC_FRAME_MAX];
+        int plen = 0;
+        int n;
+        (void)mode;
+        n = gh_rpc_pack_u32(params + plen, (int)sizeof(params) - plen, func_mask, false);
+        if (n < 0) return false;
+        plen += n;
+        uint8_t ctrl = (ctrl_bit == 0) ? 1U : 0U;
+        n = gh_rpc_pack_u8(params + plen, (int)sizeof(params) - plen, ctrl, true);
+        if (n < 0) return false;
+        plen += n;
+        ret = s_rpc_send(svc, "GH3X_SwFunctionCmd", params, plen);
+    } else {
+        ret = gh_cmd_start_hbd(&svc->parser, ctrl_bit, mode, func_mask);
+    }
     if (ret && ctrl_bit == 0) {
         svc->device_state = GH_DEV_STATE_SAMPLING;
     } else if (ret && ctrl_bit == 1) {
@@ -172,12 +385,75 @@ bool gh_service_start_hbd(gh_service_t* svc,
 
 bool gh_service_config_download(gh_service_t* svc,
                                  const gh_reg_t* regs, uint8_t count) {
-    if (!svc || !gh_service_is_connected(svc)) return false;
+    if (!svc || !gh_service_is_connected(svc) || !regs || count == 0) return false;
+    if (svc->use_chelsea_a_parser) {
+        /* Chelsea A:
+         *   send("download_config", "<u8>", 0)
+         *   send("GH3X_RegsListWriteCmd", "<u16*>", addr/val pairs)
+         *   send("download_config", "<u8>", 1)
+         * The reg list is interleaved [addr, val, addr, val, ...] as u16 array
+         */
+        uint8_t params[GH_RPC_FRAME_MAX];
+        int n;
+
+        /* Step 1: download_config start */
+        n = gh_rpc_pack_u8(params, (int)sizeof(params), 0, true);
+        if (n < 0 || !s_rpc_send(svc, "download_config", params, n)) return false;
+
+        /* Build u16 array of [addr0, val0, addr1, val1, ...] */
+        uint16_t u16_pairs[128 * 2];
+        int pair_count = (count > 128) ? 128 : count;
+        for (int i = 0; i < pair_count; i++) {
+            u16_pairs[i * 2]     = regs[i].addr;
+            u16_pairs[i * 2 + 1] = regs[i].data;
+        }
+        uint8_t arr_params[GH_RPC_FRAME_MAX];
+        int arr_len = gh_rpc_pack_u16_array(arr_params, (int)sizeof(arr_params),
+                                             u16_pairs, pair_count * 2, true);
+        if (arr_len < 0 || !s_rpc_send(svc, "GH3X_RegsListWriteCmd", arr_params, arr_len)) return false;
+
+        /* Step 3: download_config end */
+        n = gh_rpc_pack_u8(params, (int)sizeof(params), 1, true);
+        return s_rpc_send(svc, "download_config", params, n);
+    }
     return gh_cmd_config_download(&svc->parser, regs, count);
 }
 
 bool gh_service_register_rw(gh_service_t* svc, const gh_cmd_param_t* param) {
     if (!svc || !gh_service_is_connected(svc) || !param) return false;
+    if (svc->use_chelsea_a_parser) {
+        uint8_t params[GH_RPC_FRAME_MAX];
+        int plen = 0;
+        int n;
+        uint8_t op = param->args.reg_oper.op_mode;
+        uint16_t addr = param->args.reg_oper.reg_addr;
+        uint8_t  reg_count = param->args.reg_oper.reg_count;
+
+        if (op == 0U) {
+            /* 读操作: GH3X_RegsReadCmd(addr: u16, count: d32) */
+            n = gh_rpc_pack_u16(params + plen, (int)sizeof(params) - plen, addr, false);
+            if (n < 0) return false;
+            plen += n;
+            n = gh_rpc_pack_i32(params + plen, (int)sizeof(params) - plen, (int32_t)reg_count, true);
+            if (n < 0) return false;
+            plen += n;
+            return s_rpc_sall(svc, "GH3X_RegsReadCmd", params, plen);
+        } else if (op == 1U && param->args.reg_oper.regs) {
+            /* 写操作: GH3X_RegsListWriteCmd(pairs: u16*) */
+            const gh_reg_t *regs = param->args.reg_oper.regs;
+            uint16_t u16_pairs[64 * 2];
+            int cnt = (reg_count > 64) ? 64 : reg_count;
+            for (int i = 0; i < cnt; i++) {
+                u16_pairs[i * 2]     = regs[i].addr;
+                u16_pairs[i * 2 + 1] = regs[i].data;
+            }
+            int arr_len = gh_rpc_pack_u16_array(params, (int)sizeof(params),
+                                                 u16_pairs, cnt * 2, true);
+            if (arr_len < 0) return false;
+            return s_rpc_send(svc, "GH3X_RegsListWriteCmd", params, arr_len);
+        }
+        return false;
+    }
     return gh_cmd_register_rw(&svc->parser, param);
 }
 
@@ -193,15 +469,42 @@ gh_device_state_t gh_service_get_state(const gh_service_t* svc) {
 
 bool gh_service_cardiff_control(gh_service_t* svc, uint8_t ctrl_val) {
     if (!svc || !gh_service_is_connected(svc)) return false;
+    if (svc->use_chelsea_a_parser) {
+        /* Chelsea A: GH3X_ChipCtrl(ctrl: u8) */
+        uint8_t params[2];
+        int n = gh_rpc_pack_u8(params, (int)sizeof(params), ctrl_val, true);
+        if (n < 0) return false;
+        return s_rpc_send(svc, "GH3X_ChipCtrl", params, n);
+    }
     return gh_cmd_cardiff_control(&svc->parser, ctrl_val);
 }
 
 bool gh_service_get_evk_version(gh_service_t* svc, uint8_t type) {
     if (!svc || !gh_service_is_connected(svc)) return false;
+    if (svc->use_chelsea_a_parser) {
+        /* Chelsea A: GH3X_GetVersion(type: u8) — sall，期望响应 */
+        uint8_t params[2];
+        int n = gh_rpc_pack_u8(params, (int)sizeof(params), type, true);
+        if (n < 0) return false;
+        return s_rpc_sall(svc, "GH3X_GetVersion", params, n);
+    }
     return gh_cmd_get_evk_version(&svc->parser, type);
 }
 
 bool gh_service_set_work_mode(gh_service_t* svc, uint8_t mode, uint32_t func_mask) {
     if (!svc || !gh_service_is_connected(svc)) return false;
+    if (svc->use_chelsea_a_parser) {
+        /* Chelsea A: GH3X_SwFunctionCmd(func_mask: u32, mode: u8) */
+        uint8_t params[GH_RPC_FRAME_MAX];
+        int plen = 0;
+        int n;
+        n = gh_rpc_pack_u32(params + plen, (int)sizeof(params) - plen, func_mask, false);
+        if (n < 0) return false;
+        plen += n;
+        n = gh_rpc_pack_u8(params + plen, (int)sizeof(params) - plen, mode, true);
+        if (n < 0) return false;
+        plen += n;
+        return s_rpc_send(svc, "GH3X_SwFunctionCmd", params, plen);
+    }
     return gh_cmd_set_work_mode(&svc->parser, mode, func_mask);
 }

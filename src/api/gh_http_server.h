@@ -22,6 +22,10 @@ extern "C" {
 /* 帧队列容量（环形缓冲） */
 #define GH_API_QUEUE_SIZE   64
 
+/* 日志队列（串口收发调试） */
+#define GH_API_LOG_QUEUE_SIZE  128
+#define GH_API_LOG_MAX_LEN     256
+
 /* ============================================================
  * 线程安全帧队列
  * 模拟器线程 / 串口接收线程 向此队列 push，
@@ -34,6 +38,23 @@ typedef struct {
     int             count;      /* 当前队列长度 */
     gh_mutex_t      lock;       /* 保护并发访问 */
 } gh_frame_queue_t;
+
+/* ============================================================
+ * 线程安全日志队列（串口调试用）
+ * dir: "tx" = 发送, "rx" = 接收, "info" = 普通信息
+ * ============================================================ */
+typedef struct {
+    char text[GH_API_LOG_MAX_LEN];
+    char dir[8];
+} gh_log_msg_t;
+
+typedef struct {
+    gh_log_msg_t msgs[GH_API_LOG_QUEUE_SIZE];
+    int          head;
+    int          tail;
+    int          count;
+    gh_mutex_t   lock;
+} gh_log_queue_t;
 
 /* ============================================================
  * API 服务器上下文
@@ -49,6 +70,9 @@ typedef struct {
     /* 最新一帧（供 GET /api/device/data 轮询使用）*/
     gh_data_frame_t  latest_frame;
     bool             has_frame;
+
+    /* 日志队列（串口调试 TX/RX 实时推送）*/
+    gh_log_queue_t   log_queue;
 } gh_api_t;
 
 /* ============================================================
@@ -87,6 +111,15 @@ void gh_api_stop(gh_api_t *api);
  * @param frame 要广播的帧
  */
 void gh_api_push_frame(gh_api_t *api, const gh_data_frame_t *frame);
+
+/**
+ * @brief 推送日志消息（线程安全）
+ *        供 transport 层或 service 层调用，将 TX/RX 原始字节信息推送到前端调试窗口
+ * @param api   API上下文
+ * @param text  日志文本（如 "[TX] AA 11 55 01 19 01 xx"）
+ * @param dir   方向: "tx" / "rx" / "info"
+ */
+void gh_api_push_log(gh_api_t *api, const char *text, const char *dir);
 
 /**
  * @brief 释放资源

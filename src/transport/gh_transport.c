@@ -306,6 +306,22 @@ static unsigned __stdcall s_rx_thread(void* arg) {
 
         if (ReadFile((HANDLE)t->serial_fd, &t->rx_buf[t->rx_tail], space, &bytesRead, NULL)) {
             if (bytesRead > 0) {
+                /* 记录接收的原始字节 */
+                if (t->log_cb) {
+                    char hex_buf[64 * 3 + 8];
+                    int off = 0;
+                    off += snprintf(hex_buf + off, sizeof(hex_buf) - (size_t)off, "[RX]");
+                    DWORD show = bytesRead > 64 ? 64 : bytesRead;
+                    for (DWORD i = 0; i < show; i++) {
+                        off += snprintf(hex_buf + off, sizeof(hex_buf) - (size_t)off,
+                                        " %02X", t->rx_buf[t->rx_tail + i]);
+                    }
+                    if (bytesRead > 64) {
+                        snprintf(hex_buf + off, sizeof(hex_buf) - (size_t)off,
+                                 " ...(%lu bytes)", bytesRead);
+                    }
+                    t->log_cb(hex_buf, t->log_ctx);
+                }
                 t->rx_tail += (uint16_t)bytesRead;
                 s_process_rx_buffer(t);
             }
@@ -358,6 +374,22 @@ static void* s_rx_thread(void* arg) {
                              &t->rx_buf[t->rx_tail],
                              space);
             if (n > 0) {
+                /* 记录接收的原始字节 */
+                if (t->log_cb) {
+                    char hex_buf[64 * 3 + 8];
+                    int off = 0;
+                    off += snprintf(hex_buf + off, sizeof(hex_buf) - (size_t)off, "[RX]");
+                    ssize_t show = n > 64 ? 64 : n;
+                    for (ssize_t i = 0; i < show; i++) {
+                        off += snprintf(hex_buf + off, sizeof(hex_buf) - (size_t)off,
+                                        " %02X", t->rx_buf[t->rx_tail + i]);
+                    }
+                    if (n > 64) {
+                        snprintf(hex_buf + off, sizeof(hex_buf) - (size_t)off,
+                                 " ...(%zd bytes)", n);
+                    }
+                    t->log_cb(hex_buf, t->log_ctx);
+                }
                 t->rx_tail += (uint16_t)n;
                 s_process_rx_buffer(t);
             } else if (n == 0) {
@@ -487,7 +519,25 @@ void gh_transport_close(gh_transport_t* t) {
 
 bool gh_transport_send(gh_transport_t* t, const uint8_t* data, uint16_t len) {
     if (!t || t->serial_fd == -1 || t->serial_fd == 0 || !data || len == 0) return false;
-    
+
+    /* 记录发送的原始字节（十六进制），通过 log_cb 推送到调试窗口 */
+    if (t->log_cb) {
+        /* 格式: "[TX] AA 11 55 01 19 01 xx" (最多显示64字节) */
+        char hex_buf[64 * 3 + 8];
+        int  off = 0;
+        off += snprintf(hex_buf + off, sizeof(hex_buf) - (size_t)off, "[TX]");
+        uint16_t show = len > 64 ? 64 : len;
+        for (uint16_t i = 0; i < show; i++) {
+            off += snprintf(hex_buf + off, sizeof(hex_buf) - (size_t)off,
+                            " %02X", data[i]);
+        }
+        if (len > 64) {
+            off += snprintf(hex_buf + off, sizeof(hex_buf) - (size_t)off,
+                            " ...(%u bytes)", (unsigned)len);
+        }
+        t->log_cb(hex_buf, t->log_ctx);
+    }
+
 #ifdef _WIN32
     DWORD written = 0;
     if (WriteFile((HANDLE)t->serial_fd, data, len, &written, NULL)) {

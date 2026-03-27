@@ -78,7 +78,11 @@ endif()
 # 第二步：定义各层源文件
 # ============================================================
 
-set(PROTOCOL_SRCS   src/protocol/gh_protocol.c)
+set(PROTOCOL_SRCS
+    src/protocol/gh_protocol.c
+    src/protocol/gh_rpc.c
+    src/protocol/chelsea_a/gh_data_package_decode.c
+)
 set(TRANSPORT_SRCS  src/transport/gh_transport.c)
 set(SERVICE_SRCS    src/service/gh_service.c)
 set(API_SRCS        src/api/gh_http_server.c)
