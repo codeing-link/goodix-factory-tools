@@ -38,15 +38,15 @@ static void s_csv_write_frame(FILE *fp, const gh_func_frame_t *fr, uint64_t ts_m
             (int)fr->gsensor_data.acc[1],
             (int)fr->gsensor_data.acc[2]);
 
-    /* 兼容两类历史口径：
-     * 1) 低通道配置（常见 ch<=4）：CH 追加 ipd_pa（如 2ch -> CH0..CH3）
-     * 2) 高通道配置（ch>4）：CH 仅保留 rawdata，避免出现 CH0..CH13 这类扩展
+    /* 对齐 Qt: rawdataToCsvManager(gh_func_frame_t*)
+     * CH0..CH(ch-1) = rawdata
+     * 若 2*ch < 16，则 CH(ch)..CH(2*ch-1) = ipd_pa
      */
     int ch_vals[16] = {0};
     for (int i = 0; i < ch && i < 16; i++) {
         ch_vals[i] = fr->p_data[i].rawdata;
     }
-    if (ch > 0 && ch <= 4) {
+    if ((2 * ch) < 16) {
         for (int i = 0; i < ch && (i + ch) < 16; i++) {
             ch_vals[i + ch] = fr->p_data[i].ipd_pa;
         }
@@ -55,21 +55,30 @@ static void s_csv_write_frame(FILE *fp, const gh_func_frame_t *fr, uint64_t ts_m
         fprintf(fp, "\t%d", ch_vals[i]);
     }
 
-    /* FLAG0..FLAG7 */
+    /* FLAG0..FLAG7（Qt 仅写 i<ch 的 flag，其余列保持默认0）*/
     for (int i = 0; i < 8; i++) {
         uint8_t f = 0;
         if (i < ch) memcpy(&f, &fr->p_data[i].flag, 1);
         fprintf(fp, "\t%u", (unsigned)f);
     }
-    /* REF_RESULT0..15（原上位机此处通常不写 ipd_pa） */
+    /* REF_RESULT0..15（Web 无外部参考值，保持 0） */
     for (int i = 0; i < 16; i++) {
         fprintf(fp, "\t0");
     }
-    /* ALGO_RESULT0..7 (not meaningful for Test1, write 0) */
-    for (int i = 0; i < 8; i++) {
-        fprintf(fp, "\t0");
+    /* ALGO_RESULT0..7（对齐 Qt：按 p_algo_res[0] 结果个数写入，其余补0）*/
+    int algo_vals[8] = {0};
+    if (fr->p_algo_res != NULL) {
+        const uint32_t *sp_algo_res = (const uint32_t *)fr->p_algo_res;
+        int algo_num = (int)sp_algo_res[0];
+        if (algo_num > 8) algo_num = 8;
+        for (int i = 0; i < algo_num; i++) {
+            algo_vals[i] = (int)sp_algo_res[i + 1];
+        }
     }
-    /* AGC_INFO_CH0..15（对齐原上位机：取 agc_info 前 4 字节） */
+    for (int i = 0; i < 8; i++) {
+        fprintf(fp, "\t%d", algo_vals[i]);
+    }
+    /* AGC_INFO_CH0..15（Qt: reinterpret_cast<uint32_t*>(&agc_info)[0]）*/
     for (int i = 0; i < 16; i++) {
         uint32_t v = 0;
         if (i < ch) memcpy(&v, &fr->p_data[i].agc_info, sizeof(uint32_t));

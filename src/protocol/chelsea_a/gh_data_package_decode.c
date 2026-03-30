@@ -613,14 +613,12 @@ static void gh_protocol_parse_agc_info(gh_func_frame_t* p_func_frame, int32_t* a
         agc_union.data32bit[0] = agc_info[i];
         agc_union.data32bit[1] = agc_info_high[i];
         
-        // 从联合体中提取AGC上传信息并赋值到帧数据中
+        // 与 Qt CSV 行为对齐：AGC_INFO_CHx 取 agc_info 的低 32bit 原始值
+        // 直接按位拷贝到 agc_info 结构，避免 bitfield 编译器差异导致重组值偏移。
         if (p_func_frame->p_data) {
-            p_func_frame->p_data[i].agc_info.gain_code = agc_union.gh_agc_upload.gain_code;
-            p_func_frame->p_data[i].agc_info.bg_cancel_range = agc_union.gh_agc_upload.bg_cancel_range;
-            p_func_frame->p_data[i].agc_info.dc_cancel_range = agc_union.gh_agc_upload.dc_cancel_range;
-            p_func_frame->p_data[i].agc_info.dc_cancel_code = agc_union.gh_agc_upload.dc_cancel_code;
-            p_func_frame->p_data[i].agc_info.led_drv0 = agc_union.gh_agc_upload.led_drv0;
-            p_func_frame->p_data[i].agc_info.led_drv1 = agc_union.gh_agc_upload.led_drv1;
+            uint64_t agc_raw64 = ((uint64_t)(uint32_t)agc_info_high[i] << 32) | (uint32_t)agc_info[i];
+            memset(&p_func_frame->p_data[i].agc_info, 0, sizeof(p_func_frame->p_data[i].agc_info));
+            memcpy(&p_func_frame->p_data[i].agc_info, &agc_raw64, sizeof(p_func_frame->p_data[i].agc_info));
             
             // led_drv_fs来自帧数据而不是agc_info
             p_func_frame->led_drv_fs[0] = agc_union.gh_agc_upload.led_drv_fs;
