@@ -15,17 +15,6 @@
  * CSV 写入辅助
  * ============================================================ */
 
-static uint64_t s_pack_agc_info(const gh_agc_info_t *a) {
-    return (uint64_t)a->gain_code
-         | ((uint64_t)a->bg_cancel_range << 4)
-         | ((uint64_t)a->dc_cancel_range << 6)
-         | ((uint64_t)a->dc_cancel_code  << 8)
-         | ((uint64_t)a->led_drv0        << 16)
-         | ((uint64_t)a->led_drv1        << 24)
-         | ((uint64_t)a->bg_cancel_code  << 32)
-         | ((uint64_t)a->tia_gain        << 40);
-}
-
 static void s_csv_write_header(FILE *fp) {
     fprintf(fp, "TimeStamp\tFRAME_ID\tACCX\tACCY\tACCZ");
     for (int i = 0; i < 16; i++) fprintf(fp, "\tCH%d", i);
@@ -40,36 +29,51 @@ static void s_csv_write_header(FILE *fp) {
 }
 
 static void s_csv_write_frame(FILE *fp, const gh_func_frame_t *fr, uint64_t ts_ms) {
+    (void)ts_ms;
     int ch = (int)fr->ch_num;
     fprintf(fp, "%llu\t%u\t%d\t%d\t%d",
-            (unsigned long long)ts_ms,
+            (unsigned long long)fr->timestamp,
             fr->frame_cnt,
             (int)fr->gsensor_data.acc[0],
             (int)fr->gsensor_data.acc[1],
             (int)fr->gsensor_data.acc[2]);
 
-    /* CH0..CH15 rawdata */
-    for (int i = 0; i < 16; i++) {
-        fprintf(fp, "\t%d", (i < ch) ? fr->p_data[i].rawdata : 0);
+    /* 兼容两类历史口径：
+     * 1) 低通道配置（常见 ch<=4）：CH 追加 ipd_pa（如 2ch -> CH0..CH3）
+     * 2) 高通道配置（ch>4）：CH 仅保留 rawdata，避免出现 CH0..CH13 这类扩展
+     */
+    int ch_vals[16] = {0};
+    for (int i = 0; i < ch && i < 16; i++) {
+        ch_vals[i] = fr->p_data[i].rawdata;
     }
+    if (ch > 0 && ch <= 4) {
+        for (int i = 0; i < ch && (i + ch) < 16; i++) {
+            ch_vals[i + ch] = fr->p_data[i].ipd_pa;
+        }
+    }
+    for (int i = 0; i < 16; i++) {
+        fprintf(fp, "\t%d", ch_vals[i]);
+    }
+
     /* FLAG0..FLAG7 */
     for (int i = 0; i < 8; i++) {
         uint8_t f = 0;
         if (i < ch) memcpy(&f, &fr->p_data[i].flag, 1);
         fprintf(fp, "\t%u", (unsigned)f);
     }
-    /* REF_RESULT0..15 (ipd_pa) */
+    /* REF_RESULT0..15（原上位机此处通常不写 ipd_pa） */
     for (int i = 0; i < 16; i++) {
-        fprintf(fp, "\t%d", (i < ch) ? fr->p_data[i].ipd_pa : 0);
+        fprintf(fp, "\t0");
     }
     /* ALGO_RESULT0..7 (not meaningful for Test1, write 0) */
     for (int i = 0; i < 8; i++) {
         fprintf(fp, "\t0");
     }
-    /* AGC_INFO_CH0..15 */
+    /* AGC_INFO_CH0..15（对齐原上位机：取 agc_info 前 4 字节） */
     for (int i = 0; i < 16; i++) {
-        uint64_t v = (i < ch) ? s_pack_agc_info(&fr->p_data[i].agc_info) : 0ULL;
-        fprintf(fp, "\t%llu", (unsigned long long)v);
+        uint32_t v = 0;
+        if (i < ch) memcpy(&v, &fr->p_data[i].agc_info, sizeof(uint32_t));
+        fprintf(fp, "\t%u", (unsigned)v);
     }
     /* AMB_CH0..3, TEMP_CH0..3 (not in Test1 frame) */
     for (int i = 0; i < 4; i++) fprintf(fp, "\t0");
@@ -509,40 +513,51 @@ bool gh_service_config_download(gh_service_t* svc,
                                  const gh_reg_t* regs, uint8_t count) {
     if (!svc || !gh_service_is_connected(svc) || !regs || count == 0) return false;
     if (svc->use_chelsea_a_parser) {
-        /* Chelsea A 配置下发流程（原始协议抓包确认全部为 sall）：
-         *   sall("GH3X_ChipCtrl",   0xC2)           — 芯片复位
-         *   sall("download_config", 0)               — 开始下发配置
-         *   sall("GH3X_RegsListWriteCmd", <u16*>)   — 写寄存器列表
-         *   sall("download_config", 1)               — 结束下发配置
-         * 寄存器列表格式：[addr0, val0, addr1, val1, ...] u16 数组
+        /* 对齐原 Qt 上位机 CardiffRPCCall::sendConfig 行为：
+         *   send("GH3X_ChipCtrl", 0xC2)
+         *   send("download_config", 0)
+         *   send("GH3X_RegsListWriteCmd", <u16*>) 分包，每包最多100个u16
+         *   send("download_config", 1)
+         * 注意：这里使用 send（非 sall），避免设备在某些固件上对配置流程限于普通发送通道。
          */
         uint8_t params[4];
         int n;
 
-        /* Step 0: GH3X_ChipCtrl(0xC2) — 复位芯片 */
+        /* Step 0: GH3X_ChipCtrl(0xC2) */
         n = gh_rpc_pack_u8(params, (int)sizeof(params), 0xC2U, true);
-        if (n < 0 || !s_rpc_sall(svc, "GH3X_ChipCtrl", params, n)) return false;
+        if (n < 0 || !s_rpc_send(svc, "GH3X_ChipCtrl", params, n)) return false;
 
-        /* Step 1: download_config(0) — 开始 */
+        /* Step 1: download_config(0) */
         n = gh_rpc_pack_u8(params, (int)sizeof(params), 0U, true);
-        if (n < 0 || !s_rpc_sall(svc, "download_config", params, n)) return false;
+        if (n < 0 || !s_rpc_send(svc, "download_config", params, n)) return false;
 
-        /* Step 2: GH3X_RegsListWriteCmd(pairs) */
-        int pair_count = (count > 200) ? 200 : (int)count;
-        uint16_t u16_pairs[200 * 2];
-        for (int i = 0; i < pair_count; i++) {
-            u16_pairs[i * 2]     = regs[i].addr;
-            u16_pairs[i * 2 + 1] = regs[i].data;
+        /* Step 2: GH3X_RegsListWriteCmd(pairs) 分包 */
+        {
+            const int max_regs = 200;
+            const int pair_count = ((int)count > max_regs) ? max_regs : (int)count;
+            const int total_u16 = pair_count * 2;      /* addr,val 交替 */
+            const int chunk_u16 = 100;                 /* 与原版一致：每包最多100个u16 */
+            uint16_t u16_pairs[400];
+            for (int i = 0; i < pair_count; i++) {
+                u16_pairs[i * 2]     = regs[i].addr;
+                u16_pairs[i * 2 + 1] = regs[i].data;
+            }
+
+            for (int off = 0; off < total_u16; off += chunk_u16) {
+                int cur = total_u16 - off;
+                if (cur > chunk_u16) cur = chunk_u16;
+                uint8_t arr_params[GH_RPC_FRAME_MAX];
+                int arr_len = gh_rpc_pack_u16_array(arr_params, (int)sizeof(arr_params),
+                                                    &u16_pairs[off], cur, true);
+                if (arr_len < 0 || !s_rpc_send(svc, "GH3X_RegsListWriteCmd", arr_params, arr_len)) {
+                    return false;
+                }
+            }
         }
-        /* arr_params 需要足够大：2 + pair_count*2*2 bytes（每段最多255个u16）*/
-        uint8_t arr_params[GH_RPC_FRAME_MAX];
-        int arr_len = gh_rpc_pack_u16_array(arr_params, (int)sizeof(arr_params),
-                                             u16_pairs, pair_count * 2, true);
-        if (arr_len < 0 || !s_rpc_sall(svc, "GH3X_RegsListWriteCmd", arr_params, arr_len)) return false;
 
-        /* Step 3: download_config(1) — 结束 */
+        /* Step 3: download_config(1) */
         n = gh_rpc_pack_u8(params, (int)sizeof(params), 1U, true);
-        return s_rpc_sall(svc, "download_config", params, n);
+        return (n >= 0) ? s_rpc_send(svc, "download_config", params, n) : false;
     }
     return gh_cmd_config_download(&svc->parser, regs, count);
 }

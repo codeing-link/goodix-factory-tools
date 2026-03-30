@@ -465,6 +465,7 @@
         <label class="form-label">功能通道</label>
         <div class="func-checkboxes">
           <label class="func-check"><input type="checkbox" id="funcTest1" value="0x40" checked> Test1</label>
+          <label class="func-check"><input type="checkbox" id="funcTest2" value="0x80"> Test2</label>
         </div>
       </div>
 
@@ -682,6 +683,7 @@ let frameCount   = 0;
 let waveData     = [];
 let waveChannels = [[], [], [], []]; /* 多通道波形（最多4路）*/
 let activeChannel = 0;              /* 当前显示的通道 */
+let currentFuncMask = 0x40;
 const WAVE_MAX   = 400;
 
 /* ============================================================
@@ -1048,9 +1050,24 @@ function setConnected(connected) {
  * ============================================================ */
 let currentConfigName = '';
 
+function getSelectedFuncMask() {
+  let mask = 0;
+  document.querySelectorAll('.func-checkboxes input[type="checkbox"]').forEach(cb => {
+    if (cb.checked) {
+      const v = parseInt(cb.value);
+      if (!isNaN(v)) mask |= v;
+    }
+  });
+  return mask;
+}
+
 async function startSampling() {
-  /* 对齐老上位机：默认使用 0x40 */
-  const funcMask = 0x40;
+  const funcMask = getSelectedFuncMask();
+  if (!funcMask) {
+    addLog('[ERR] 请至少勾选一个功能通道（Test1/Test2）', 'err');
+    return;
+  }
+  currentFuncMask = funcMask;
   addLog(`[SEND] POST /api/device/start ctrl=0 func_mask=0x${funcMask.toString(16)} config=${currentConfigName || '(none)'}`, 'send');
   const r = await apiPost('/device/start', { ctrl: 0, mode: 0, func_mask: funcMask, config_name: currentConfigName });
   if (r && r.code === 0) {
@@ -1067,7 +1084,7 @@ async function startSampling() {
 
 async function stopSampling() {
   addLog('[SEND] POST /api/device/start ctrl=1 (stop)', 'send');
-  const r = await apiPost('/device/start', { ctrl: 1, mode: 0, func_mask: 0x40 });
+  const r = await apiPost('/device/start', { ctrl: 1, mode: 0, func_mask: currentFuncMask });
   if (r && r.code === 0) {
     isSampling = false;
     document.getElementById('startBtn').disabled = false;

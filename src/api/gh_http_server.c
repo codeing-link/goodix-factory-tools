@@ -39,6 +39,7 @@
 
 /* WebSocket 标记（存在 mg_connection->data[0]）*/
 #define WS_MARK     'W'
+#define GH_HTTP_MAX_CONFIG_REGS 200
 
 /* ============================================================
  * 内部辅助：简单 JSON 字段提取
@@ -330,11 +331,11 @@ static void s_handle_config(struct mg_connection *c,
     /* 简单解析：遍历 JSON 数组，寻找 "addr":N,"data":N 对 */
     const char *body = hm->body.buf;
     size_t blen = hm->body.len;
-    gh_reg_t regs[64];
+    gh_reg_t regs[GH_HTTP_MAX_CONFIG_REGS];
     int reg_count = 0;
 
     const char *p = body;
-    while (p && (p = strstr(p, "\"addr\"")) != NULL && reg_count < 64) {
+    while (p && (p = strstr(p, "\"addr\"")) != NULL && reg_count < GH_HTTP_MAX_CONFIG_REGS) {
         long addr = s_json_long(p, (size_t)(body + blen - p), "addr", -1);
         long data_val = s_json_long(p, (size_t)(body + blen - p), "data", -1);
         if (addr >= 0 && data_val >= 0) {
@@ -345,8 +346,17 @@ static void s_handle_config(struct mg_connection *c,
         p += 6; /* 跳过 "addr" 继续搜索 */
     }
 
+    if (reg_count >= GH_HTTP_MAX_CONFIG_REGS && p && strstr(p, "\"addr\"") != NULL) {
+        s_reply_err(c, -5, "too_many_regs");
+        return;
+    }
+
     if (reg_count > 0) {
-        gh_service_config_download(api->service, regs, (uint8_t)reg_count);
+        bool ok = gh_service_config_download(api->service, regs, (uint8_t)reg_count);
+        if (!ok) {
+            s_reply_err(c, -6, "config_send_failed");
+            return;
+        }
         char data[64];
         snprintf(data, sizeof(data), "{\"sent\":true,\"count\":%d}", reg_count);
         s_reply_ok(c, data);

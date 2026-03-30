@@ -84,6 +84,7 @@ static void s_on_log(const char *msg, void *ctx) {
  * ============================================================ */
 typedef struct {
     gh_api_t     *api;
+    gh_service_t *service;
     volatile bool *running;
 } sim_args_t;
 
@@ -97,8 +98,22 @@ static void *s_simulator_thread(void *arg) {
     uint32_t     cnt = 0;
 
     printf("[Sim ] Simulator thread started (20 FPS)\n");
+    bool sim_paused_logged = false;
 
     while (*a->running) {
+        /* 如果真实设备已连接，暂停模拟器推流，避免覆盖/干扰真实数据展示 */
+        if (a->service && gh_service_is_connected(a->service)) {
+            if (!sim_paused_logged) {
+                printf("[Sim ] Real device connected, simulator paused.\n");
+                sim_paused_logged = true;
+            }
+            GH_SLEEP_MS(100);
+            continue;
+        } else if (sim_paused_logged) {
+            printf("[Sim ] Real device disconnected, simulator resumed.\n");
+            sim_paused_logged = false;
+        }
+
         gh_data_frame_t frame;
         memset(&frame, 0, sizeof(frame));
 
@@ -241,7 +256,7 @@ int main(int argc, char *argv[]) {
 
     /* ----- 启动模拟器线程 ----- */
     gh_thread_t sim_tid  = 0;
-    sim_args_t  sim_args = { .api = &g_api, .running = &g_running };
+    sim_args_t  sim_args = { .api = &g_api, .service = &g_service, .running = &g_running };
     if (use_sim) {
         printf("[Main] 启动设备模拟器...\n");
 #ifdef _WIN32
