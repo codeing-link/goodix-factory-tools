@@ -286,6 +286,16 @@
       width: 100%; height: 100%;
       display: block;
     }
+    .wave-stats {
+      margin-left: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 62%;
+    }
 
     /* 串口调试面板 */
     .serial-debug-area {
@@ -312,6 +322,7 @@
     .log-area {
       height: 180px;
       overflow-y: auto;
+      overflow-x: hidden;
       background: #0a0a10;
       border-radius: 8px;
       padding: 0.75rem;
@@ -322,7 +333,12 @@
     .log-area::-webkit-scrollbar { width: 4px; }
     .log-area::-webkit-scrollbar-track { background: transparent; }
     .log-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-    .log-entry { color: var(--text-secondary); }
+    .log-entry {
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
     .log-entry.recv { color: #67e8f9; }
     .log-entry.send { color: #86efac; }
     .log-entry.err  { color: var(--danger); }
@@ -582,6 +598,7 @@
       <div class="card-header">
         <div class="card-icon">📈</div>
         <span class="card-title">实时波形（Channel 0）</span>
+        <span class="wave-stats" id="waveStatsText">最大值: -  最小值: -  平均值: -  差值: -</span>
         <div style="flex:1"></div>
         <button class="btn btn-outline btn-sm" onclick="clearWave()">清除</button>
       </div>
@@ -683,7 +700,16 @@ let waveData     = [];
 let waveChannels = [[], [], [], []]; /* 多通道波形（最多4路）*/
 let activeChannel = 0;              /* 当前显示的通道 */
 let currentFuncMask = 0x40;
-const WAVE_MAX   = 400;
+/* 对齐 Qt StatsCustomPlot 默认窗口长度（m_maxDataLength=100） */
+const WAVE_MAX   = 100;
+const WAVE_TICK_COUNT = 6;
+const WAVE_TARGET_FPS = 45;
+let waveDirty = true;
+let waveRafId = 0;
+let waveLastRenderTs = 0;
+let waveViewMin = null;
+let waveViewMax = null;
+let waveSampleCounter = 0;
 
 /* ============================================================
  * WebSocket 连接（自动重连，连后端的模拟器或真实设备）
@@ -778,6 +804,7 @@ async function syncDeviceStatus() {
  * ============================================================ */
 function handleFrame(frame) {
   frameCount++;
+  waveSampleCounter++;
   document.getElementById('metricFrames').textContent = frameCount;
   document.getElementById('metricFuncID').textContent =
     frame.func_id !== undefined ? frame.func_id : '--';
@@ -796,7 +823,7 @@ function handleFrame(frame) {
     if (waveChannels[ch].length > WAVE_MAX) waveChannels[ch].shift();
   }
   waveData = waveChannels[activeChannel].slice();  /* 当前显示通道 */
-  drawWaveform();
+  waveDirty = true;
 }
 
 /* ============================================================
@@ -879,25 +906,63 @@ async function writeSingleRegister() {
  * ============================================================ */
 const CHANNEL_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444'];
 
+function niceStep(v) {
+  if (!isFinite(v) || v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / p;
+  if (n <= 1) return 1 * p;
+  if (n <= 2) return 2 * p;
+  if (n <= 5) return 5 * p;
+  return 10 * p;
+}
+
+function scheduleWaveRender() {
+  if (waveRafId) return;
+  const frameInterval = 1000 / WAVE_TARGET_FPS;
+  const loop = (ts) => {
+    waveRafId = requestAnimationFrame(loop);
+    if (!waveDirty && ts - waveLastRenderTs < frameInterval) return;
+    if (ts - waveLastRenderTs < frameInterval) return;
+    waveLastRenderTs = ts;
+    drawWaveform();
+    waveDirty = false;
+  };
+  waveRafId = requestAnimationFrame(loop);
+}
+
+function resizeWaveCanvas(canvas, wrap) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = Math.max(1, wrap.clientWidth);
+  const cssH = Math.max(1, wrap.clientHeight);
+  const pxW = Math.floor(cssW * dpr);
+  const pxH = Math.floor(cssH * dpr);
+  if (canvas.width !== pxW || canvas.height !== pxH) {
+    canvas.width = pxW;
+    canvas.height = pxH;
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    waveDirty = true;
+  }
+}
+
 function drawWaveform() {
   const canvas = document.getElementById('waveform');
   const wrap   = canvas.parentElement;
-  canvas.width  = wrap.clientWidth;
-  canvas.height = wrap.clientHeight;
+  resizeWaveCanvas(canvas, wrap);
   const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  const pad = 20;
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = Math.max(1, canvas.width / dpr);
+  const H = Math.max(1, canvas.height / dpr);
+  const padL = 62;
+  const padR = 18;
+  const padT = 14;
+  const padB = 22;
+  const plotW = Math.max(1, W - padL - padR);
+  const plotH = Math.max(1, H - padT - padB);
 
   ctx.fillStyle = '#0a0a10';
   ctx.fillRect(0, 0, W, H);
-
-  /* 网格线 */
-  ctx.strokeStyle = 'rgba(99,102,241,0.08)';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const y = pad + (H - 2*pad) * i / 4;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-  }
 
   /* 无数据时显示提示 */
   if (waveData.length < 2) {
@@ -909,58 +974,131 @@ function drawWaveform() {
     return;
   }
 
-  const min   = Math.min(...waveData);
-  const max   = Math.max(...waveData);
-  const range = (max - min) || 1;
+  const dataMin = Math.min(...waveData);
+  const dataMax = Math.max(...waveData);
+  const dataRange = Math.max(1, dataMax - dataMin);
+  const margin = Math.max(1, dataRange * 0.08);
+  const targetMin = dataMin - margin;
+  const targetMax = dataMax + margin;
+  if (waveViewMin === null || waveViewMax === null || waveViewMin >= waveViewMax) {
+    waveViewMin = targetMin;
+    waveViewMax = targetMax;
+  } else {
+    const follow = 0.22;
+    waveViewMin += (targetMin - waveViewMin) * follow;
+    waveViewMax += (targetMax - waveViewMax) * follow;
+    if (waveViewMax - waveViewMin < 1) waveViewMax = waveViewMin + 1;
+  }
+
+  const step = niceStep((waveViewMax - waveViewMin) / (WAVE_TICK_COUNT - 1));
+  const axisMin = Math.floor(waveViewMin / step) * step;
+  const axisMax = Math.ceil(waveViewMax / step) * step;
+  const axisRange = Math.max(1, axisMax - axisMin);
   const color = CHANNEL_COLORS[activeChannel];
+  const sum = waveData.reduce((a, b) => a + b, 0);
+  const avg = sum / waveData.length;
+  const diff = dataMax - dataMin;
+  const statsEl = document.getElementById('waveStatsText');
+  if (statsEl) {
+    statsEl.textContent = `最大值: ${dataMax.toFixed(2)}  最小值: ${dataMin.toFixed(2)}  平均值: ${avg.toFixed(2)}  差值: ${diff.toFixed(2)}`;
+  }
+  const xEnd = Math.max(0, waveSampleCounter - 1);
+  const xStart = Math.max(0, xEnd - (waveData.length - 1));
+
+  /* 网格和 Y 轴标签 */
+  ctx.strokeStyle = 'rgba(99,102,241,0.12)';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#64748b';
+  ctx.font = '11px JetBrains Mono, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < WAVE_TICK_COUNT; i++) {
+    const y = padT + (plotH * i) / (WAVE_TICK_COUNT - 1);
+    const val = axisMax - (axisRange * i) / (WAVE_TICK_COUNT - 1);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(W - padR, y);
+    ctx.stroke();
+    ctx.fillText(Math.round(val).toString(), padL - 8, y);
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let i = 0; i < WAVE_TICK_COUNT; i++) {
+    const x = padL + (plotW * i) / (WAVE_TICK_COUNT - 1);
+    const xv = xStart + ((xEnd - xStart) * i) / (WAVE_TICK_COUNT - 1);
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + plotH);
+    ctx.stroke();
+    ctx.fillText(Math.round(xv).toString(), x, padT + plotH + 6);
+  }
+
+  /* 边框 */
+  ctx.strokeStyle = 'rgba(99,102,241,0.18)';
+  ctx.strokeRect(padL, padT, plotW, plotH);
 
   /* 波形填充区域 */
   ctx.beginPath();
-  ctx.moveTo(0, H - pad);
+  ctx.moveTo(padL, padT + plotH);
+  const denom = Math.max(1, waveData.length - 1);
   waveData.forEach((v, i) => {
-    const x = (i / (WAVE_MAX - 1)) * W;
-    const y = H - pad - ((v - min) / range) * (H - 2*pad);
+    const x = padL + (i / denom) * plotW;
+    const y = padT + plotH - ((v - axisMin) / axisRange) * plotH;
     ctx.lineTo(x, y);
   });
-  ctx.lineTo(W, H - pad);
+  ctx.lineTo(padL + plotW, padT + plotH);
   ctx.closePath();
   const fillGrad = ctx.createLinearGradient(0, 0, 0, H);
-  fillGrad.addColorStop(0, color.replace(')', ', 0.15)').replace('rgb', 'rgba'));
+  fillGrad.addColorStop(0, color + '2a');
   fillGrad.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = fillGrad;
   ctx.fill();
 
   /* 波形线 */
   ctx.beginPath();
-  const lineGrad = ctx.createLinearGradient(0, 0, W, 0);
+  const lineGrad = ctx.createLinearGradient(padL, 0, padL + plotW, 0);
   lineGrad.addColorStop(0, color + '44');
   lineGrad.addColorStop(0.5, color);
   lineGrad.addColorStop(1, color);
   ctx.strokeStyle = lineGrad;
-  ctx.lineWidth = 2;
-  ctx.shadowBlur = 10;
+  ctx.lineWidth = 1.8;
+  ctx.shadowBlur = 8;
   ctx.shadowColor = color;
   waveData.forEach((v, i) => {
-    const x = (i / (WAVE_MAX - 1)) * W;
-    const y = H - pad - ((v - min) / range) * (H - 2*pad);
+    const x = padL + (i / denom) * plotW;
+    const y = padT + plotH - ((v - axisMin) / axisRange) * plotH;
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   });
   ctx.stroke();
   ctx.shadowBlur = 0;
 
-  /* 当前值标签 */
+  /* 当前值与通道标签 */
   const lastV = waveData[waveData.length - 1];
-  const lastY = H - pad - ((lastV - min) / range) * (H - 2*pad);
-  ctx.fillStyle = '#fff';
+  const lastY = padT + plotH - ((lastV - axisMin) / axisRange) * plotH;
+  ctx.fillStyle = '#e2e8f0';
   ctx.font = 'bold 11px JetBrains Mono, monospace';
-  ctx.fillText(lastV.toFixed(0), W - 60, Math.max(lastY - 8, pad + 10));
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText(`CH${activeChannel} RAW: ${Math.round(lastV)}`, padL + 8, padT + 4);
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '10px JetBrains Mono, monospace';
+  ctx.fillText(`X: ${xStart} ~ ${xEnd}`, padL + 8, padT + 20);
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`${Math.round(lastV)}`, W - padR - 6, Math.max(padT + 10, Math.min(lastY, H - padB - 10)));
 }
 
 function clearWave() {
   waveData = [];
   waveChannels = [[], [], [], []];
+  waveViewMin = null;
+  waveViewMax = null;
+  waveSampleCounter = 0;
   frameCount = 0;
+  const statsEl = document.getElementById('waveStatsText');
+  if (statsEl) statsEl.textContent = '最大值: -  最小值: -  平均值: -  差值: -';
   document.getElementById('metricFrames').textContent = '0';
+  waveDirty = true;
   drawWaveform();
 }
 
@@ -1070,6 +1208,8 @@ async function startSampling() {
   addLog(`[SEND] POST /api/device/start ctrl=0 func_mask=0x${funcMask.toString(16)} config=${currentConfigName || '(none)'}`, 'send');
   const r = await apiPost('/device/start', { ctrl: 0, mode: 0, func_mask: funcMask, config_name: currentConfigName });
   if (r && r.code === 0) {
+    /* 对齐 Qt 新一轮采样体验：启动时清空窗口，避免旧数据影响统计和显示 */
+    clearWave();
     isSampling = true;
     document.getElementById('startBtn').disabled = true;
     document.getElementById('stopBtn').disabled  = false;
@@ -1135,16 +1275,103 @@ function importConfigFile(event) {
 
   const reader = new FileReader();
   reader.onload = function(e) {
-    const text = e.target.result;
-    // Match something like: {0x0016,0x001f}
-    const regex = /\{0x([0-9a-fA-F]{1,4})\s*,\s*0x([0-9a-fA-F]{1,4})\}/g;
-    let match;
+    const textRaw = String(e.target.result || '');
+    /* 兼容 Windows 文本：BOM / CRLF / 引号 / 分号 / TAB / 十进制 */
+    const text = textRaw.replace(/^\uFEFF/, '');
     const regList = [];
-    while ((match = regex.exec(text)) !== null) {
-       regList.push({
-         addr: match[1].padStart(4, '0').toUpperCase(),
-         val: match[2].padStart(4, '0').toUpperCase()
-       });
+    const stats = {
+      total: 0, empty: 0, comment: 0, header: 0, fewCols: 0, noNum: 0, outOfRange: 0, ok: 0
+    };
+    const rejectSamples = [];
+    const clip = (s, n = 120) => {
+      const t = String(s || '');
+      return t.length > n ? (t.slice(0, n) + `...(len=${t.length})`) : t;
+    };
+
+    addLog(`[CFGDBG] 文件: ${file.name} size=${file.size} type=${file.type || 'n/a'}`, 'info');
+    addLog(`[CFGDBG] 文本长度: raw=${textRaw.length}, normalized=${text.length}, bom_removed=${textRaw.length !== text.length}`, 'info');
+    const previewLines = text.split(/\r?\n/).slice(0, 5).map((l, i) => `L${i + 1}:${clip(l)}`);
+    if (previewLines.length) addLog(`[CFGDBG] 前5行预览: ${previewLines.join(' | ')}`, 'info');
+
+    function parseNumToken(tok) {
+      if (!tok) return null;
+      let t = String(tok).trim();
+      t = t.replace(/^["']|["']$/g, '');   // 去掉首尾引号
+      t = t.replace(/[{}]/g, '');          // 去掉花括号
+      t = t.replace(/[uUlL]+$/g, '');      // 去掉 C 风格后缀
+      if (!t) return null;
+      if (/^[0-9a-fA-F]+[hH]$/.test(t)) return parseInt(t.slice(0, -1), 16);
+      if (/^0[xX][0-9a-fA-F]+$/.test(t)) return parseInt(t, 16);
+      if (/^[0-9a-fA-F]+$/.test(t) && /[a-fA-F]/.test(t)) return parseInt(t, 16);
+      if (/^\d+$/.test(t)) return parseInt(t, 10);
+      return null;
+    }
+
+    const lines = text.split(/\r?\n/);
+    addLog(`[CFGDBG] 总行数: ${lines.length}`, 'info');
+    for (const lineRaw of lines) {
+      stats.total++;
+      if (!lineRaw) continue;
+      const line = lineRaw.trim();
+      if (!line) { stats.empty++; continue; }
+
+      /* 跳过注释和标题行 */
+      if (line.startsWith('#') || line.startsWith('//')) { stats.comment++; continue; }
+      if (/addr|address|reg|data|value/i.test(line) && !/0[xX][0-9a-fA-F]+/.test(line)) { stats.header++; continue; }
+
+      const norm = line.replace(/[，；]/g, ',').replace(/;/g, ',').replace(/\t/g, ',');
+      const parts = norm.split(',').map(s => s.trim()).filter(Boolean);
+      if (parts.length < 2) {
+        stats.fewCols++;
+        if (rejectSamples.length < 5) rejectSamples.push(`fewCols: "${clip(line)}"`);
+        continue;
+      }
+
+      const nums = [];
+      for (const p of parts) {
+        const n = parseNumToken(p);
+        if (n !== null) nums.push(n);
+        if (nums.length >= 2) break;
+      }
+      if (nums.length < 2) {
+        stats.noNum++;
+        if (rejectSamples.length < 5) rejectSamples.push(`noNum: "${clip(line)}"`);
+        continue;
+      }
+      const addr = nums[0];
+      const data = nums[1];
+      if (addr === null || data === null) {
+        stats.noNum++;
+        if (rejectSamples.length < 5) rejectSamples.push(`nullNum: "${clip(line)}"`);
+        continue;
+      }
+      if (addr < 0 || addr > 0xFFFF || data < 0 || data > 0xFFFF) {
+        stats.outOfRange++;
+        if (rejectSamples.length < 5) rejectSamples.push(`range: "${clip(line)}" -> [${addr},${data}]`);
+        continue;
+      }
+
+      regList.push({
+        addr: addr.toString(16).padStart(4, '0').toUpperCase(),
+        val: data.toString(16).padStart(4, '0').toUpperCase()
+      });
+      stats.ok++;
+    }
+
+    /* 文本里可能是一行一个 "{0xADDR,0xVAL}"，再做一次全局兜底 */
+    if (regList.length === 0) {
+      const regexFallback = /\{\s*["']?0[xX]?([0-9a-fA-F]{1,4})["']?\s*[,，]\s*["']?0[xX]?([0-9a-fA-F]{1,4})["']?\s*\}/g;
+      let match;
+      while ((match = regexFallback.exec(text)) !== null) {
+        regList.push({
+          addr: parseInt(match[1], 16).toString(16).padStart(4, '0').toUpperCase(),
+          val: parseInt(match[2], 16).toString(16).padStart(4, '0').toUpperCase()
+        });
+      }
+    }
+    addLog(`[CFGDBG] 解析统计: total=${stats.total}, ok=${stats.ok}, empty=${stats.empty}, comment=${stats.comment}, header=${stats.header}, fewCols=${stats.fewCols}, noNum=${stats.noNum}, range=${stats.outOfRange}, fallback_total=${regList.length}`, 'info');
+    if (rejectSamples.length > 0) {
+      addLog(`[CFGDBG] 失败样例: ${rejectSamples.join(' | ')}`, 'err');
     }
 
     if (regList.length > 0) {
@@ -1160,11 +1387,16 @@ function importConfigFile(event) {
         tbody.appendChild(tr);
       });
       addLog(`[INFO] 成功解析并导入 ${regList.length} 条寄存器配置`, 'info');
+      const show = regList.slice(0, 5).map(r => `{0x${r.addr},0x${r.val}}`).join(' ');
+      addLog(`[CFGDBG] 前5条解析结果: ${show}`, 'info');
     } else {
-      addLog(`[ERR] 文件未匹配到 {0xADDR, 0xVAL} 格式内容`, 'err');
+      addLog(`[ERR] 文件未匹配到寄存器格式。支持: {0xADDR,0xVAL} 或 0xADDR,0xVAL`, 'err');
     }
     // reset input allows importing the same file again
     event.target.value = '';
+  };
+  reader.onerror = function(err) {
+    addLog(`[ERR] 文件读取失败: ${err?.target?.error?.message || 'unknown'}`, 'err');
   };
   reader.readAsText(file);
 }
@@ -1280,6 +1512,7 @@ async function checkBackend() {
  * ============================================================ */
 window.addEventListener('DOMContentLoaded', () => {
   drawWaveform();
+  scheduleWaveRender();
 
   addLog('[INFO] GH Protocol UI 已加载', 'info');
   addLog(`[INFO] 后端地址: http://${BACKEND_HOST}:${BACKEND_PORT}`, 'info');
@@ -1298,7 +1531,7 @@ window.addEventListener('DOMContentLoaded', () => {
   }, 2500);
 });
 
-window.addEventListener('resize', drawWaveform);
+window.addEventListener('resize', () => { waveDirty = true; drawWaveform(); });
 </script>
 </body>
 </html>

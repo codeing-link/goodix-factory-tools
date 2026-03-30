@@ -146,13 +146,13 @@ static void s_ws_broadcast_log(struct mg_mgr *mgr, const gh_log_msg_t *msg) {
  * @param frame  数据帧
  */
 static void s_ws_broadcast(struct mg_mgr *mgr, const gh_data_frame_t *frame) {
-    char json[1024];
+    char json[2048];
     /* 构造完整的多通道原始数据数组 */
-    char raw_arr[256] = "[";
-    for (int i = 0; i < 8; i++) {
+    char raw_arr[512] = "[";
+    for (int i = 0; i < 16; i++) {
         char tmp[24];
-        snprintf(tmp, sizeof(tmp), "%u%s",
-                 frame->raw_data[i], i < 7 ? "," : "");
+        snprintf(tmp, sizeof(tmp), "%d%s",
+                 (int32_t)frame->raw_data[i], i < 15 ? "," : "");
         strncat(raw_arr, tmp, sizeof(raw_arr) - strlen(raw_arr) - 1);
     }
     strncat(raw_arr, "]", sizeof(raw_arr) - strlen(raw_arr) - 1);
@@ -447,14 +447,20 @@ static void s_handle_get_data(struct mg_connection *c,
         return;
     }
     const gh_data_frame_t *f = &api->latest_frame;
-    char data[512];
+    char data[1024];
     snprintf(data, sizeof(data),
              "{\"func_id\":%u,\"frame_cnt\":%u,"
-             "\"raw\":[%u,%u,%u,%u],"
+             "\"raw\":[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d],"
              "\"hr\":%d,\"ts\":%llu}",
              f->func_id, f->frame_cnt,
-             f->raw_data[0], f->raw_data[1],
-             f->raw_data[2], f->raw_data[3],
+             (int32_t)f->raw_data[0], (int32_t)f->raw_data[1],
+             (int32_t)f->raw_data[2], (int32_t)f->raw_data[3],
+             (int32_t)f->raw_data[4], (int32_t)f->raw_data[5],
+             (int32_t)f->raw_data[6], (int32_t)f->raw_data[7],
+             (int32_t)f->raw_data[8], (int32_t)f->raw_data[9],
+             (int32_t)f->raw_data[10], (int32_t)f->raw_data[11],
+             (int32_t)f->raw_data[12], (int32_t)f->raw_data[13],
+             (int32_t)f->raw_data[14], (int32_t)f->raw_data[15],
              f->algo_result_num > 0 ? (int)f->algo_result[0] : 0,
              (unsigned long long)f->timestamp_ms);
     s_reply_ok(c, data);

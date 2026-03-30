@@ -38,15 +38,15 @@ static void s_csv_write_frame(FILE *fp, const gh_func_frame_t *fr, uint64_t ts_m
             (int)fr->gsensor_data.acc[1],
             (int)fr->gsensor_data.acc[2]);
 
-    /* 对齐 Qt: rawdataToCsvManager(gh_func_frame_t*)
+    /* CH 填充口径修正：
      * CH0..CH(ch-1) = rawdata
-     * 若 2*ch < 16，则 CH(ch)..CH(2*ch-1) = ipd_pa
+     * 若 2*ch <= 16，则 CH(ch)..CH(2*ch-1) = ipd_pa
      */
     int ch_vals[16] = {0};
     for (int i = 0; i < ch && i < 16; i++) {
         ch_vals[i] = fr->p_data[i].rawdata;
     }
-    if ((2 * ch) < 16) {
+    if ((2 * ch) <= 16) {
         for (int i = 0; i < ch && (i + ch) < 16; i++) {
             ch_vals[i + ch] = fr->p_data[i].ipd_pa;
         }
@@ -152,9 +152,16 @@ static void s_on_transport_frame(const uint8_t* frame, uint16_t len, void* ctx) 
             data.func_id = p_frames[i].id;
             data.frame_cnt = p_frames[i].frame_cnt;
             
-            /* 映射原始数据 */
+            /* 映射原始数据：
+             * ch 路输入时，优先放 raw 到前半段；
+             * 当 2*ch <= 16 时，将 ipd_pa 补到后半段，形成 CH0..CH15。 */
             for (int ch = 0; ch < p_frames[i].ch_num && ch < 32; ch++) {
                 data.raw_data[ch] = p_frames[i].p_data[ch].rawdata;
+            }
+            if ((2 * (int)p_frames[i].ch_num) <= 16) {
+                for (int ch = 0; ch < p_frames[i].ch_num && (ch + p_frames[i].ch_num) < 32; ch++) {
+                    data.raw_data[ch + p_frames[i].ch_num] = (uint32_t)p_frames[i].p_data[ch].ipd_pa;
+                }
             }
             
             /* G-sensor 映射 */
