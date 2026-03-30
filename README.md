@@ -182,7 +182,7 @@ make -j4
 ./gh_backend --port /dev/ttyUSB0
 
 # 指定自定义波特率
-./gh_backend --port /dev/ttyUSB0 --baud 400000
+./gh_backend --port /dev/ttyUSB0 --baud 115200
 ```
 
 打开浏览器访问 `http://localhost:8080`。
@@ -222,4 +222,5 @@ refactor_output/
 
 ---
 
-详细开发文档：[docs/README.md](docs/README.md)
+详细开发文档：[docs/README.md](docs/README.md)  
+本次版本说明：[docs/04_release_notes_2026-03-30.md](docs/04_release_notes_2026-03-30.md)

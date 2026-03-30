@@ -3,7 +3,7 @@ REM ============================================================
 REM build_and_run.bat - Auto build and run GH Protocol backend (Windows)
 REM Usage:
 REM   Double click to run (default simulator mode)
-REM   Command line: build_and_run.bat --port COM3 --baud 400000
+REM   Command line: build_and_run.bat --port COM3 --baud 115200
 REM ============================================================
 
 setlocal

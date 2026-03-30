@@ -235,7 +235,7 @@ UProtocol内层包格式:
 
 | 接口 | 类型 | Qt依赖 | 说明 |
 |------|------|--------|------|
-| 串口 | QSerialPort | **有** | 波特率 400000 默认，8N1 |
+| 串口 | QSerialPort | **有** | 波特率 115200 默认，8N1 |
 | BLE | Qt Bluetooth | **有** | GATT特征值UUID收发 |
 | 分帧 | mainwindow.cpp | **有** | 0xAA11帧头+100ms超时 |
 

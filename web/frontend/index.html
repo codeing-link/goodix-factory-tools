@@ -439,9 +439,9 @@
         <label class="form-label" for="baudSelect">波特率</label>
         <select class="form-select" id="baudSelect">
           <option value="9600">9600</option>
-          <option value="115200">115200</option>
+          <option value="115200" selected>115200</option>
           <option value="230400">230400</option>
-          <option value="400000" selected>400000</option>
+          <option value="400000">400000</option>
           <option value="460800">460800</option>
           <option value="921600">921600</option>
         </select>
@@ -464,21 +464,12 @@
       <div class="form-group">
         <label class="form-label">功能通道</label>
         <div class="func-checkboxes">
-          <label class="func-check"><input type="checkbox" id="funcHR" value="0x02" checked> 心率</label>
-          <label class="func-check"><input type="checkbox" id="funcSPO2" value="0x20"> 血氧</label>
-          <label class="func-check"><input type="checkbox" id="funcECG" value="0x40"> ECG</label>
-          <label class="func-check"><input type="checkbox" id="funcHRV" value="0x04"> HRV</label>
-          <label class="func-check"><input type="checkbox" id="funcBP" value="0x10"> 血压</label>
-          <label class="func-check"><input type="checkbox" id="funcADT" value="0x01"> ADT</label>
+          <label class="func-check"><input type="checkbox" id="funcTest1" value="0x40" checked> Test1</label>
         </div>
       </div>
 
       <div class="form-group">
-        <label class="form-label" for="modeSelect">采样模式</label>
-        <select class="form-select" id="modeSelect">
-          <option value="0">EVK 模式</option>
-          <option value="1">Verify 模式</option>
-        </select>
+        <label class="form-label" id="csvNameLabel" style="color:#aaa">CSV: (导入配置后自动命名)</label>
       </div>
 
       <div class="btn-row">
@@ -1055,15 +1046,13 @@ function setConnected(connected) {
 /* ============================================================
  * 采集控制
  * ============================================================ */
+let currentConfigName = '';
+
 async function startSampling() {
-  let funcMask = 0;
-  document.querySelectorAll('.func-check input[type=checkbox]:checked').forEach(cb => {
-    funcMask |= parseInt(cb.value, 16);
-  });
-  if (funcMask === 0) funcMask = 0x02;  /* 默认心率 */
-  const mode = parseInt(document.getElementById('modeSelect').value);
-  addLog(`[SEND] POST /api/device/start ctrl=0 mode=${mode} func_mask=0x${funcMask.toString(16)}`, 'send');
-  const r = await apiPost('/device/start', { ctrl: 0, mode, func_mask: funcMask });
+  /* 对齐老上位机：默认使用 0x40 */
+  const funcMask = 0x40;
+  addLog(`[SEND] POST /api/device/start ctrl=0 func_mask=0x${funcMask.toString(16)} config=${currentConfigName || '(none)'}`, 'send');
+  const r = await apiPost('/device/start', { ctrl: 0, mode: 0, func_mask: funcMask, config_name: currentConfigName });
   if (r && r.code === 0) {
     isSampling = true;
     document.getElementById('startBtn').disabled = true;
@@ -1078,7 +1067,7 @@ async function startSampling() {
 
 async function stopSampling() {
   addLog('[SEND] POST /api/device/start ctrl=1 (stop)', 'send');
-  const r = await apiPost('/device/start', { ctrl: 1, mode: 0, func_mask: 0 });
+  const r = await apiPost('/device/start', { ctrl: 1, mode: 0, func_mask: 0x40 });
   if (r && r.code === 0) {
     isSampling = false;
     document.getElementById('startBtn').disabled = false;
@@ -1123,6 +1112,10 @@ async function loadSerialList() {
 function importConfigFile(event) {
   const file = event.target.files[0];
   if (!file) return;
+  /* 保存配置文件名（不含扩展名），用于 CSV 命名 */
+  currentConfigName = file.name.replace(/\.[^.]+$/, '');
+  const label = document.getElementById('csvNameLabel');
+  if (label) label.textContent = `CSV: ${currentConfigName}.csv`;
 
   const reader = new FileReader();
   reader.onload = function(e) {

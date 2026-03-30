@@ -19,8 +19,12 @@
   #include <unistd.h>
   #include <pthread.h>
   #include <termios.h>
+  #include <sys/ioctl.h>
   #include <sys/select.h>
   #include <sys/time.h>
+#ifdef __APPLE__
+  #include <IOKit/serial/ioss.h>
+#endif
 #endif
 
 
@@ -107,6 +111,7 @@ static bool s_configure_serial(int fd, const gh_serial_config_t* cfg) {
      * 此处仅展示标准路径，实际需用 ioctl(TCSETS2) 设置自定义波特率。
      */
     speed_t baud;
+    bool need_custom_baud = false;
     switch (cfg->baud_rate) {
         case 9600:   baud = B9600;   break;
         case 19200:  baud = B19200;  break;
@@ -114,6 +119,15 @@ static bool s_configure_serial(int fd, const gh_serial_config_t* cfg) {
         case 57600:  baud = B57600;  break;
         case 115200: baud = B115200; break;
         case 230400: baud = B230400; break;
+#ifdef B400000
+        case 400000: baud = B400000; break;
+#else
+        case 400000:
+            /* macOS 等平台通常无 B400000，后续通过 ioctl(IOSSIOSPEED) 设置。 */
+            baud = B38400;
+            need_custom_baud = true;
+            break;
+#endif
 #ifdef B460800
         case 460800: baud = B460800; break;
 #endif
@@ -174,91 +188,98 @@ static bool s_configure_serial(int fd, const gh_serial_config_t* cfg) {
         perror("[Transport] tcsetattr failed");
         return false;
     }
+
+#ifdef __APPLE__
+    if (need_custom_baud) {
+        speed_t custom_baud = (speed_t)cfg->baud_rate;
+        if (ioctl(fd, IOSSIOSPEED, &custom_baud) == -1) {
+            perror("[Transport] IOSSIOSPEED failed");
+            return false;
+        }
+    }
+#else
+    (void)need_custom_baud;
+#endif
     return true;
 }
 #endif
 
 /* ============================================================
- * 内部：帧分割逻辑（原 handleSerialReadyRead 核心算法）
+ * 内部：帧分割逻辑（基于长度字节的精确分帧）
  *
- * 算法:
- *   1. 将新数据追加到 rx_buf
- *   2. 找到第一个 0xAA11 帧头，丢弃前导无效数据
- *   3. 循环查找下一个 0xAA11，两个标志之间的数据为一帧
- *   4. 完整帧通过 on_frame 回调送出
- *   5. 残余数据（以0xAA11开头但还没有下一个标志）保留并超时处理
+ * 帧格式: [AA][11][len][payload: len bytes][CRC]
+ * 总长度 = len + 4
+ *
+ * 算法：
+ *   1. 在缓冲区头部定位 0xAA11
+ *   2. 读取 byte[2] 作为 payload 长度，计算总帧长 = len+4
+ *   3. 若已收到完整帧字节，立即回调并前进 rx_head
+ *   4. 否则等待更多数据（不使用超时推送残帧）
+ *
+ * 相比"找下一个AA11"的方式，此方法能正确处理负载中含有 AA 11 字节的情况
  * ============================================================ */
 static void s_process_rx_buffer(gh_transport_t* t) {
-    const uint8_t MARKER[2] = {GH_FRAME_MARKER0, GH_FRAME_MARKER1};
-    uint16_t data_len; /* 当前缓冲区中有效数据长度 */
-    uint8_t* buf;
-
-    /* 计算有效数据长度 */
-    if (t->rx_tail >= t->rx_head) {
-        data_len = t->rx_tail - t->rx_head;
-    } else {
-        /* 环形缓冲绕回（本实现简化为线性，实际需处理环绕）*/
-        data_len = 0;
-    }
-
-    if (data_len < 2) return;
-
-    buf = &t->rx_buf[t->rx_head];
-
-    /* 找第一个 0xAA11 */
-    uint16_t first_idx = 0xFFFF;
-    uint16_t i;
-    for (i = 0; i + 1 < data_len; i++) {
-        if (buf[i] == MARKER[0] && buf[i+1] == MARKER[1]) {
-            first_idx = i;
-            break;
-        }
-    }
-    if (first_idx == 0xFFFF) {
-        /* 未找到帧头，防止无限增长，超长清除 */
-        if (data_len > GH_TRANSPORT_RX_BUF_SIZE / 2) {
-            t->rx_head = t->rx_tail = 0;
-        }
-        return;
-    }
-    /* 丢弃帧头前的无效数据 */
-    t->rx_head += first_idx;
-    buf = &t->rx_buf[t->rx_head];
-    data_len -= first_idx;
-
-    /* 循环提取完整帧 */
-    uint16_t search_start = 0;
     while (true) {
-        /* 从 search_start+2 开始查找下一个帧头 */
-        uint16_t next_idx = 0xFFFF;
-        for (i = search_start + 2; i + 1 < data_len; i++) {
-            if (buf[i] == MARKER[0] && buf[i+1] == MARKER[1]) {
-                next_idx = i;
-                break;
+        uint16_t data_len = (t->rx_tail >= t->rx_head)
+                          ? (uint16_t)(t->rx_tail - t->rx_head)
+                          : 0U;
+
+        if (data_len < 4U) break; /* 至少需要 AA 11 len CRC = 4 字节 */
+
+        uint8_t *buf = &t->rx_buf[t->rx_head];
+
+        /* 若不是 AA 11，逐字节跳过直到找到帧头 */
+        if (buf[0] != GH_FRAME_MARKER0 || buf[1] != GH_FRAME_MARKER1) {
+            uint16_t skip = data_len; /* 默认跳过全部 */
+            for (uint16_t i = 1U; i + 1U < data_len; i++) {
+                if (buf[i] == GH_FRAME_MARKER0 && buf[i + 1U] == GH_FRAME_MARKER1) {
+                    skip = i;
+                    break;
+                }
             }
+            t->rx_head += skip;
+            if (skip == data_len) break; /* 未找到 AA 11 */
+            continue;
         }
 
-        if (next_idx == 0xFFFF) {
-            /* 没有下一个帧头，保留从 search_start 开始的残余 */
-            t->rx_head += search_start;
+        /* 读 payload 长度，计算完整帧字节数 */
+        uint16_t payload_len  = (uint16_t)buf[2];
+        uint16_t total_len    = payload_len + 4U; /* AA+11+len+payload+CRC */
+
+        /* 防御：单帧过大（大于缓冲区一半），认为同步丢失，跳过 AA */
+        if (total_len > (GH_TRANSPORT_RX_BUF_SIZE / 2U)) {
+            t->rx_head += 2U;
+            continue;
+        }
+
+        if (data_len < total_len) {
+            /* 帧尚未完整到达，等待 */
             break;
         }
 
-        /* 提取一帧：[search_start, next_idx) */
-        uint16_t frame_len = next_idx - search_start;
-        if (frame_len > 0 && t->on_frame) {
-            t->on_frame(&buf[search_start], frame_len, t->on_frame_ctx);
+        /* 完整帧：回调上层 */
+        if (t->on_frame) {
+            t->on_frame(buf, total_len, t->on_frame_ctx);
         }
-        search_start = next_idx;
+        t->rx_head += total_len;
+
+        /* 缓冲区紧凑：head 超过半程时搬移数据 */
+        if (t->rx_head >= (GH_TRANSPORT_RX_BUF_SIZE / 2U)) {
+            uint16_t remaining = t->rx_tail - t->rx_head;
+            if (remaining > 0U) {
+                memmove(t->rx_buf, &t->rx_buf[t->rx_head], remaining);
+            }
+            t->rx_head = 0U;
+            t->rx_tail = remaining;
+        }
     }
 
-    /* 记录最后接收时间，用于超时检测 */
-    t->last_rx_time_ms = gh_platform_now_ms();
-    t->frame_timeout_armed = true;
+    t->last_rx_time_ms    = gh_platform_now_ms();
+    t->frame_timeout_armed = (t->rx_tail > t->rx_head);
 }
 
 /**
- * @brief 检查帧超时并处理残余缓冲（原 onFrameTimeout 逻辑）
+ * @brief 帧超时：丢弃不完整的残余数据（避免积压）
  */
 static void s_check_frame_timeout(gh_transport_t* t) {
     if (!t->frame_timeout_armed) return;
@@ -266,25 +287,9 @@ static void s_check_frame_timeout(gh_transport_t* t) {
     uint32_t now = gh_platform_now_ms();
     if (now - t->last_rx_time_ms < GH_FRAME_TIMEOUT_MS) return;
 
-    /* 超时：将剩余缓冲作为一帧发出 */
     t->frame_timeout_armed = false;
-
-    uint16_t data_len = (t->rx_tail >= t->rx_head)
-                      ? (t->rx_tail - t->rx_head)
-                      : 0;
-    if (data_len < 2) {
-        t->rx_head = t->rx_tail = 0;
-        return;
-    }
-
-    /* 确认以帧头开始 */
-    uint8_t* buf = &t->rx_buf[t->rx_head];
-    if (buf[0] == GH_FRAME_MARKER0 && buf[1] == GH_FRAME_MARKER1) {
-        if (t->on_frame) {
-            t->on_frame(buf, data_len, t->on_frame_ctx);
-        }
-    }
-    t->rx_head = t->rx_tail = 0;
+    /* 长度模式下无法可靠拼接残帧，直接丢弃 */
+    t->rx_head = t->rx_tail = 0U;
 }
 
 /* ============================================================

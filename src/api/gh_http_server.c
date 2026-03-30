@@ -227,7 +227,7 @@ static void s_handle_status(struct mg_connection *c,
 }
 
 /** POST /api/device/connect
- *  Body: {"port":"/dev/ttyUSB0","baud_rate":400000}
+ *  Body: {"port":"/dev/ttyUSB0","baud_rate":115200}
  */
 static void s_handle_connect(struct mg_connection *c,
                               struct mg_http_message *hm,
@@ -236,7 +236,7 @@ static void s_handle_connect(struct mg_connection *c,
 
     char port[64] = {0};
     s_json_str(hm->body.buf, hm->body.len, "port", port, sizeof(port));
-    long baud = s_json_long(hm->body.buf, hm->body.len, "baud_rate", 400000);
+    long baud = s_json_long(hm->body.buf, hm->body.len, "baud_rate", 115200);
 
     if (port[0] == '\0') { s_reply_err(c, -2, "Missing port"); return; }
 
@@ -267,26 +267,53 @@ static void s_handle_disconnect(struct mg_connection *c,
 }
 
 /** POST /api/device/start
- *  Body: {"ctrl":0,"mode":0,"func_mask":2}
+ *  Body: {"ctrl":0,"mode":0,"func_mask":64,"config_name":"my_test"}
  *  ctrl=0 → 开始采样, ctrl=1 → 停止采样
  */
 static void s_handle_start(struct mg_connection *c,
                             struct mg_http_message *hm,
                             gh_api_t *api) {
-    long ctrl      = s_json_long(hm->body.buf, hm->body.len, "ctrl", 0);
-    long mode      = s_json_long(hm->body.buf, hm->body.len, "mode", 0);
-    long func_mask = s_json_long(hm->body.buf, hm->body.len, "func_mask", 2);
+    long ctrl        = s_json_long(hm->body.buf, hm->body.len, "ctrl", 0);
+    long mode        = s_json_long(hm->body.buf, hm->body.len, "mode", 0);
+    long func_mask   = s_json_long(hm->body.buf, hm->body.len, "func_mask", 0x40);
+    char config_name[256] = {0};
+    s_json_str(hm->body.buf, hm->body.len, "config_name", config_name, sizeof(config_name));
 
-    if (api->service && gh_service_is_connected(api->service)) {
-        gh_service_start_hbd(api->service,
-                             (uint8_t)ctrl, (uint8_t)mode, (uint32_t)func_mask);
+    if (!api->service) {
+        s_reply_err(c, -1, "no_service");
+        return;
+    }
+    if (!gh_service_is_connected(api->service)) {
+        s_reply_err(c, -2, "not_connected");
+        return;
+    }
+
+    {
+        char log_buf[256];
+        snprintf(log_buf, sizeof(log_buf),
+                 "[CTRL] start req ctrl=%ld mode=%ld func_mask=0x%lX cfg=%s",
+                 ctrl, mode, func_mask, config_name[0] ? config_name : "(none)");
+        gh_api_push_log(api, log_buf, "info");
+    }
+
+    /* 开始采集时设置 CSV 文件名 */
+    if (ctrl == 0 && config_name[0] != '\0') {
+        gh_service_set_csv_name(api->service, config_name);
+    }
+
+    if (!gh_service_start_hbd(api->service,
+                              (uint8_t)ctrl, (uint8_t)mode, (uint32_t)func_mask)) {
+        gh_api_push_log(api, "[CTRL] start command send failed", "info");
+        s_reply_err(c, -3, "start_cmd_send_failed");
+        return;
+    }
+
+    gh_api_push_log(api, "[CTRL] start command sent", "info");
+    {
         char data[64];
         snprintf(data, sizeof(data),
                  "{\"state\":\"%s\"}", ctrl == 0 ? "sampling" : "connected");
         s_reply_ok(c, data);
-    } else {
-        /* 无真实设备，回复 ok（模拟器自行产生数据）*/
-        s_reply_ok(c, "{\"state\":\"sim_sampling\"}");
     }
 }
 

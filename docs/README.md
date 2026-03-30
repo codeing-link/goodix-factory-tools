@@ -35,6 +35,7 @@ refactor_output/
     ├── 01_architecture_analysis.md  ← 第一阶段：代码框架分析
     ├── 02_refactor_design.md        ← 第二阶段：解耦与重构设计
     ├── 03_user_manual.md            ← 用户上手、测试及 API 完全使用手册
+    ├── 04_release_notes_2026-03-30.md ← 当前稳定版本修复说明与验收要点
     └── README.md                    ← 本文档
 ```
 
@@ -44,7 +45,7 @@ refactor_output/
 
 ```
 设备（串口/BLE）
-    │ 字节流（波特率400000）
+    │ 字节流（波特率115200）
     ▼
 [transport层] gh_transport.c
     │ select()非阻塞IO + pthread接收线程
@@ -83,7 +84,7 @@ refactor_output/
 |------|------|------|-----------|
 | GET | `/api/device/status` | 获取设备状态 | 无 |
 | GET | `/api/device/list` | 列出可用串口 | 无 |
-| POST | `/api/device/connect` | 连接设备 | `{"port":"/dev/ttyUSB0","baud_rate":400000}` |
+| POST | `/api/device/connect` | 连接设备 | `{"port":"/dev/ttyUSB0","baud_rate":115200}` |
 | POST | `/api/device/disconnect` | 断开连接 | `{}` |
 | POST | `/api/device/start` | 开始/停止采样 | `{"ctrl":0,"mode":0,"func_mask":2}` |
 | POST | `/api/device/config` | 下发寄存器配置 | `{"regs":[{"addr":258,"data":1}]}` |
@@ -132,7 +133,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Debug
 make -j4
 
 # 运行（替换为实际串口）
-./gh_backend --port /dev/ttyUSB0 --baud 400000 --http-port 8080
+./gh_backend --port /dev/ttyUSB0 --baud 115200 --http-port 8080
 ```
 
 ### 接入 HTTP 服务器库

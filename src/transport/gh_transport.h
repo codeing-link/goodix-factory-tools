@@ -57,7 +57,7 @@ typedef void (*gh_log_cb)(const char* msg, void* user_ctx);
 
 typedef struct {
     char     port[64];       /* 串口设备名，如 "/dev/ttyUSB0" 或 "COM3" */
-    int      baud_rate;      /* 波特率，如 400000 */
+    int      baud_rate;      /* 波特率，如 115200 */
     int      data_bits;      /* 数据位，通常 8 */
     char     parity;         /* 校验: 'N'=None, 'E'=Even, 'O'=Odd */
     int      stop_bits;      /* 停止位: 1 或 2 */

@@ -70,13 +70,13 @@ cd build
 **运行命令：**
 ```bash
 # macOS 示例：
-./build_and_run.sh --port /dev/cu.usbserial-0001 --baud 400000
+./build_and_run.sh --port /dev/cu.usbserial-0001 --baud 115200
 
 # Linux 示例：
-./build_and_run.sh --port /dev/ttyUSB0 --baud 400000
+./build_and_run.sh --port /dev/ttyUSB0 --baud 115200
 
 # Windows 示例：
-gh_backend.exe --port COM3 --baud 400000
+gh_backend.exe --port COM3 --baud 115200
 ```
 > **提示**：如果在指定的串口节点无法成功打开，系统会自动**降级到模拟模式**并提示警告，请留意终端日志。
 
@@ -91,7 +91,7 @@ gh_backend.exe --port COM3 --baud 400000
 ### 2.1 串口连接控制 (左上卡片)
 *   **串口设备**：输入或选择目标串口路径（如 `/dev/ttyUSB0`）。
     * *API接口会在页面启动时自动通过 `/api/serial/list` 检测可用设备（若受支持）。*
-*   **波特率**：默认推荐 `400000` (取决于固件端设置)。
+*   **波特率**：默认推荐 `115200` (取决于固件端设置)。
 *   **「连接/断开设备」按钮**：触发后端串口资源的分配和释放。若是模拟模式，连接按钮表示允许将模拟器数据流“挂载”到处理队列中。
 
 ### 2.2 采集控制 (左中卡片)
@@ -179,7 +179,7 @@ sequenceDiagram
       "data": {
         "state": "connected",
         "port": "/dev/ttyUSB0",
-        "baud_rate": 400000,
+        "baud_rate": 115200,
         "sim_mode": false
       }
     }
@@ -189,7 +189,7 @@ sequenceDiagram
 *   **请求**：`POST /api/device/connect`
 *   **Body 参数**：
     *   `port`: 串口名称 (如 `"/dev/ttyUSB0"`, `"COM3"`)
-    *   `baud_rate`: 波特率整数 (如 `400000`)
+    *   `baud_rate`: 波特率整数 (如 `115200`)
 *   **请求**：`POST /api/device/disconnect` (无 Body)
 
 ### 4.3. 开始/停止采样 (StartHBD)

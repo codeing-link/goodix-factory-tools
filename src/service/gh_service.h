@@ -12,6 +12,7 @@
 #include "../transport/gh_transport.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -74,6 +75,10 @@ typedef struct {
     gh_device_state_t device_state; /* 当前设备状态 */
     bool              use_chelsea_a_parser; /* 区分采用 Cardiff 还是 Chelsea 解包 */
     uint8_t           rpc_com_id;           /* Cardiff RPC sall 通信ID计数器 */
+
+    /* CSV 数据保存 */
+    FILE             *csv_fp;            /* CSV 文件句柄，NULL 表示未打开 */
+    char              csv_filename[256]; /* CSV 文件名（由 config 文件名衍生）*/
 
     /* 向 API 层的回调 */
     gh_svc_on_state_cb on_state;
@@ -201,6 +206,13 @@ bool gh_service_get_evk_version(gh_service_t* svc, uint8_t type);
  * @return true=发送成功
  */
 bool gh_service_set_work_mode(gh_service_t* svc, uint8_t mode, uint32_t func_mask);
+
+/**
+ * @brief 设置 CSV 保存文件名（根据配置文件名衍生，调用 start_hbd 前调用）
+ * @param svc         服务实例
+ * @param config_name 配置文件名（不含路径，不含扩展名；传 NULL 清空）
+ */
+void gh_service_set_csv_name(gh_service_t *svc, const char *config_name);
 
 #ifdef __cplusplus
 }

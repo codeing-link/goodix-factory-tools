@@ -13,7 +13,7 @@
  *
  * 命令行:
  *   ./gh_backend                          → 纯模拟器模式，浏览器打开 http://localhost:8080
- *   ./gh_backend --port /dev/ttyUSB0      → 真实串口，失败时自动降级到模拟器
+ *   ./gh_backend --port /dev/ttyUSB0      → 真实串口（默认115200），失败时自动降级到模拟器
  *   ./gh_backend --port COM3 --baud 115200→ Windows 串口
  *   ./gh_backend --http 9090 --sim        → 强制模拟器，端口9090
  *   ./gh_backend --web /path/to/frontend  → 自定义前端目录
@@ -146,7 +146,7 @@ static void *s_simulator_thread(void *arg) {
 int main(int argc, char *argv[]) {
     /* ----- 默认参数 ----- */
     const char *port    = NULL;    /* NULL = 使用模拟器 */
-    int         baud    = 400000;
+    int         baud    = 115200;
     int         http    = 8080;
     bool        use_sim = false;
     char        web_root[512];
@@ -172,7 +172,7 @@ int main(int argc, char *argv[]) {
             printf("Usage: %s [options]\n\n", argv[0]);
             printf("Options:\n");
             printf("  --port <dev>   串口设备 (如 /dev/ttyUSB0 或 COM3)\n");
-            printf("  --baud <n>     波特率 (默认: 400000)\n");
+            printf("  --baud <n>     波特率 (默认: 115200)\n");
             printf("  --http <n>     HTTP 监听端口 (默认: 8080)\n");
             printf("  --sim          强制使用模拟器（不连接真实设备）\n");
             printf("  --web <dir>    前端目录 (默认: web/frontend)\n");

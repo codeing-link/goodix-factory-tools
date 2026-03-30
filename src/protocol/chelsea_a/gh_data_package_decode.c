@@ -461,30 +461,14 @@ static uint32_t gh_protocol_process_single_frame(gh_func_frame_t* p_func_frame, 
 
 void gh_protocol_process(gh_func_frame_t** p_func_frames, uint8_t* frame_len, uint8_t* buffer, uint32_t len)
 {
+    if (p_func_frames == NULL || *p_func_frames == NULL || frame_len == NULL || buffer == NULL || len == 0) {
+        return;  // 无效输入，避免崩溃
+    }
+
     uint32_t pos = 0;
     *frame_len = 0;
-    
-    // Reset start flag and history data for new buffer processing
-    g_start_flag = 1;
-    
-    // Reset all history data to 0 for first frame processing
-    memset(g_last_rawdata, 0, sizeof(g_last_rawdata));
-    memset(g_last_phy_value, 0, sizeof(g_last_phy_value));
-    memset(g_last_timestamp, 0, sizeof(g_last_timestamp));
-    memset(g_last_timestamp_high, 0, sizeof(g_last_timestamp_high));
-    memset(g_last_gs_data, 0, sizeof(g_last_gs_data));
-    memset(g_last_flags, 0, sizeof(g_last_flags));
-    memset(g_last_algo_data, 0, sizeof(g_last_algo_data));
-    memset(g_last_agc_info, 0, sizeof(g_last_agc_info));
-    memset(g_last_agc_info_high, 0, sizeof(g_last_agc_info_high));
-    g_last_agc_size = 0;
-    g_last_flag_data_bits = 0;
-    g_last_gs_data_size = 0;
-    
 
-    if (p_func_frames == NULL || *p_func_frames == NULL || frame_len == NULL) {
-        return;  // 无效指针，避免崩溃
-    }
+    /* 差分流解码依赖历史值，不能在每个 RPC 包入口都清零。 */
     // Use the provided frame array directly
     gh_func_frame_t* frame_array = *p_func_frames;
     

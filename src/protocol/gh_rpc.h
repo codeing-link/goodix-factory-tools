@@ -35,8 +35,8 @@
 extern "C" {
 #endif
 
-/* Max TX frame buffer size */
-#define GH_RPC_FRAME_MAX  256
+/* Max TX frame buffer size (1024 bytes supports up to ~250 register pairs) */
+#define GH_RPC_FRAME_MAX  1024
 
 /* ---- TypeKEY constants ---- */
 /* Multi-char key (is_array=1, width=3, pack_type=2, fin=1) */

@@ -7,8 +7,75 @@
 #include <string.h>
 #include <stdio.h>
 #include "../protocol/chelsea_a/gh_data_package_decode.h"
+#include "../protocol/chelsea_a/gh_data_common.h"
 #include "../protocol/gh_rpc.h"
 #include <time.h>
+
+/* ============================================================
+ * CSV 写入辅助
+ * ============================================================ */
+
+static uint64_t s_pack_agc_info(const gh_agc_info_t *a) {
+    return (uint64_t)a->gain_code
+         | ((uint64_t)a->bg_cancel_range << 4)
+         | ((uint64_t)a->dc_cancel_range << 6)
+         | ((uint64_t)a->dc_cancel_code  << 8)
+         | ((uint64_t)a->led_drv0        << 16)
+         | ((uint64_t)a->led_drv1        << 24)
+         | ((uint64_t)a->bg_cancel_code  << 32)
+         | ((uint64_t)a->tia_gain        << 40);
+}
+
+static void s_csv_write_header(FILE *fp) {
+    fprintf(fp, "TimeStamp\tFRAME_ID\tACCX\tACCY\tACCZ");
+    for (int i = 0; i < 16; i++) fprintf(fp, "\tCH%d", i);
+    for (int i = 0; i < 8;  i++) fprintf(fp, "\tFLAG%d", i);
+    for (int i = 0; i < 16; i++) fprintf(fp, "\tREF_RESULT%d", i);
+    for (int i = 0; i < 8;  i++) fprintf(fp, "\tALGO_RESULT%d", i);
+    for (int i = 0; i < 16; i++) fprintf(fp, "\tAGC_INFO_CH%d", i);
+    for (int i = 0; i < 4;  i++) fprintf(fp, "\tAMB_CH%d", i);
+    for (int i = 0; i < 4;  i++) fprintf(fp, "\tTEMP_CH%d", i);
+    fprintf(fp, "\n");
+    fflush(fp);
+}
+
+static void s_csv_write_frame(FILE *fp, const gh_func_frame_t *fr, uint64_t ts_ms) {
+    int ch = (int)fr->ch_num;
+    fprintf(fp, "%llu\t%u\t%d\t%d\t%d",
+            (unsigned long long)ts_ms,
+            fr->frame_cnt,
+            (int)fr->gsensor_data.acc[0],
+            (int)fr->gsensor_data.acc[1],
+            (int)fr->gsensor_data.acc[2]);
+
+    /* CH0..CH15 rawdata */
+    for (int i = 0; i < 16; i++) {
+        fprintf(fp, "\t%d", (i < ch) ? fr->p_data[i].rawdata : 0);
+    }
+    /* FLAG0..FLAG7 */
+    for (int i = 0; i < 8; i++) {
+        uint8_t f = 0;
+        if (i < ch) memcpy(&f, &fr->p_data[i].flag, 1);
+        fprintf(fp, "\t%u", (unsigned)f);
+    }
+    /* REF_RESULT0..15 (ipd_pa) */
+    for (int i = 0; i < 16; i++) {
+        fprintf(fp, "\t%d", (i < ch) ? fr->p_data[i].ipd_pa : 0);
+    }
+    /* ALGO_RESULT0..7 (not meaningful for Test1, write 0) */
+    for (int i = 0; i < 8; i++) {
+        fprintf(fp, "\t0");
+    }
+    /* AGC_INFO_CH0..15 */
+    for (int i = 0; i < 16; i++) {
+        uint64_t v = (i < ch) ? s_pack_agc_info(&fr->p_data[i].agc_info) : 0ULL;
+        fprintf(fp, "\t%llu", (unsigned long long)v);
+    }
+    /* AMB_CH0..3, TEMP_CH0..3 (not in Test1 frame) */
+    for (int i = 0; i < 4; i++) fprintf(fp, "\t0");
+    for (int i = 0; i < 4; i++) fprintf(fp, "\t0");
+    fprintf(fp, "\n");
+}
 
 /* ============================================================
  * 内部：transport → service 的帧接收回调
@@ -95,6 +162,11 @@ static void s_on_transport_frame(const uint8_t* frame, uint16_t len, void* ctx) 
             clock_gettime(CLOCK_REALTIME, &ts);
             data.timestamp_ms = (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
 
+            /* 写入 CSV */
+            if (svc->csv_fp) {
+                s_csv_write_frame(svc->csv_fp, &p_frames[i], data.timestamp_ms);
+            }
+
             if (svc->on_data) {
                 svc->on_data(&data, svc->on_data_ctx);
             }
@@ -168,8 +240,29 @@ static void s_on_transport_frame(const uint8_t* frame, uint16_t len, void* ctx) 
                          "[RPC] RX GH3X_RegsReadCmd params_len=%d (no u16 array)", rpc_params_len);
                 if (svc->on_log) svc->on_log(log_buf, svc->on_log_ctx);
             }
+        } else if ((strcmp(rpc_key, "GH3X_ChipCtrl")       == 0 ||
+                    strcmp(rpc_key, "download_config")      == 0 ||
+                    strcmp(rpc_key, "GH3X_RegsListWriteCmd")== 0 ||
+                    strcmp(rpc_key, "GH3X_SwFunctionCmd")   == 0)
+                   && rpc_params != NULL) {
+            /* sall 命令的设备响应格式：[U8_MORE: status][U8_MORE: com_id_echo]
+             * status=0x02 表示成功（与原始抓包一致）
+             */
+            uint8_t status = 0, com_echo = 0;
+            if (rpc_params_len >= 4) {
+                /* 跳过 TypeData 字节，读值 */
+                status   = rpc_params[1];
+                com_echo = rpc_params[3];
+            }
+            if (svc->on_log) {
+                char log_buf[128];
+                snprintf(log_buf, sizeof(log_buf),
+                         "[RPC] ACK key=\"%s\" status=0x%02X com_id=0x%02X",
+                         rpc_key, status, com_echo);
+                svc->on_log(log_buf, svc->on_log_ctx);
+            }
         } else {
-            /* 其他 key：sall 响应等，记录日志 */
+            /* 其他 key：记录日志 */
             char log_buf[128];
             snprintf(log_buf, sizeof(log_buf), "[RPC] RX key=\"%s\" params_len=%d", rpc_key, rpc_params_len);
             if (svc->on_log) svc->on_log(log_buf, svc->on_log_ctx);
@@ -300,11 +393,12 @@ void gh_service_init(gh_service_t* svc,
     svc->on_log_ctx   = log_ctx;
     svc->device_state = GH_DEV_STATE_DISCONNECTED;
     svc->use_chelsea_a_parser = true; /* Chelsea A 为默认协议 */
-    svc->rpc_com_id   = 0;
+    /* 对齐老上位机 CardiffRPC 的 secure com_id 窗口，首个常见请求从 0x08 开始。 */
+    svc->rpc_com_id   = 0x08;
 
     /* 初始化默认串口配置 */
     strncpy(svc->serial_cfg.port, "/dev/ttyUSB0", sizeof(svc->serial_cfg.port));
-    svc->serial_cfg.baud_rate  = 400000;
+    svc->serial_cfg.baud_rate  = 115200;
     svc->serial_cfg.data_bits  = 8;
     svc->serial_cfg.parity     = 'N';
     svc->serial_cfg.stop_bits  = 1;
@@ -342,6 +436,11 @@ bool gh_service_connect_serial(gh_service_t* svc, const char* port) {
 
 void gh_service_disconnect(gh_service_t* svc) {
     if (!svc) return;
+    /* 断开时关闭 CSV（若采集中断）*/
+    if (svc->csv_fp) {
+        fclose(svc->csv_fp);
+        svc->csv_fp = NULL;
+    }
     gh_transport_stop_rx_thread(&svc->transport);
     gh_transport_close(&svc->transport);
     gh_parser_reset(&svc->parser);
@@ -358,26 +457,49 @@ bool gh_service_start_hbd(gh_service_t* svc,
     bool ret;
     if (svc->use_chelsea_a_parser) {
         /* Chelsea A: GH3X_SwFunctionCmd(func_mask: u32, ctrl: u8)
-         * ctrl_bit=0 → start (ctrl=1), ctrl_bit=1 → stop (ctrl=0) */
-        uint8_t params[GH_RPC_FRAME_MAX];
-        int plen = 0;
-        int n;
+         * 对齐原始上位机逻辑：一次操作仅发送一帧，ctrl 由上层直接决定。
+         */
+        uint8_t params[16];
+        int plen, n;
         (void)mode;
+        plen = 0;
         n = gh_rpc_pack_u32(params + plen, (int)sizeof(params) - plen, func_mask, false);
         if (n < 0) return false;
         plen += n;
-        uint8_t ctrl = (ctrl_bit == 0) ? 1U : 0U;
-        n = gh_rpc_pack_u8(params + plen, (int)sizeof(params) - plen, ctrl, true);
+        n = gh_rpc_pack_u8(params + plen, (int)sizeof(params) - plen, ctrl_bit, true);
         if (n < 0) return false;
         plen += n;
-        ret = s_rpc_send(svc, "GH3X_SwFunctionCmd", params, plen);
+        ret = s_rpc_sall(svc, "GH3X_SwFunctionCmd", params, plen);
     } else {
         ret = gh_cmd_start_hbd(&svc->parser, ctrl_bit, mode, func_mask);
     }
     if (ret && ctrl_bit == 0) {
         svc->device_state = GH_DEV_STATE_SAMPLING;
+        /* 开启采集：打开 CSV 文件并写入表头 */
+        if (svc->csv_filename[0] != '\0') {
+            if (svc->csv_fp) { fclose(svc->csv_fp); svc->csv_fp = NULL; }
+            svc->csv_fp = fopen(svc->csv_filename, "w");
+            if (svc->csv_fp) {
+                s_csv_write_header(svc->csv_fp);
+                if (svc->on_log) {
+                    char log_buf[320];
+                    snprintf(log_buf, sizeof(log_buf), "[CSV] Saving to %s", svc->csv_filename);
+                    svc->on_log(log_buf, svc->on_log_ctx);
+                }
+            }
+        }
     } else if (ret && ctrl_bit == 1) {
         svc->device_state = GH_DEV_STATE_CONNECTED;
+        /* 停止采集：关闭 CSV */
+        if (svc->csv_fp) {
+            fclose(svc->csv_fp);
+            svc->csv_fp = NULL;
+            if (svc->on_log) {
+                char log_buf[320];
+                snprintf(log_buf, sizeof(log_buf), "[CSV] Saved to %s", svc->csv_filename);
+                svc->on_log(log_buf, svc->on_log_ctx);
+            }
+        }
     }
     if (svc->on_state) svc->on_state(svc->device_state, svc->on_state_ctx);
     return ret;
@@ -387,34 +509,40 @@ bool gh_service_config_download(gh_service_t* svc,
                                  const gh_reg_t* regs, uint8_t count) {
     if (!svc || !gh_service_is_connected(svc) || !regs || count == 0) return false;
     if (svc->use_chelsea_a_parser) {
-        /* Chelsea A:
-         *   send("download_config", "<u8>", 0)
-         *   send("GH3X_RegsListWriteCmd", "<u16*>", addr/val pairs)
-         *   send("download_config", "<u8>", 1)
-         * The reg list is interleaved [addr, val, addr, val, ...] as u16 array
+        /* Chelsea A 配置下发流程（原始协议抓包确认全部为 sall）：
+         *   sall("GH3X_ChipCtrl",   0xC2)           — 芯片复位
+         *   sall("download_config", 0)               — 开始下发配置
+         *   sall("GH3X_RegsListWriteCmd", <u16*>)   — 写寄存器列表
+         *   sall("download_config", 1)               — 结束下发配置
+         * 寄存器列表格式：[addr0, val0, addr1, val1, ...] u16 数组
          */
-        uint8_t params[GH_RPC_FRAME_MAX];
+        uint8_t params[4];
         int n;
 
-        /* Step 1: download_config start */
-        n = gh_rpc_pack_u8(params, (int)sizeof(params), 0, true);
-        if (n < 0 || !s_rpc_send(svc, "download_config", params, n)) return false;
+        /* Step 0: GH3X_ChipCtrl(0xC2) — 复位芯片 */
+        n = gh_rpc_pack_u8(params, (int)sizeof(params), 0xC2U, true);
+        if (n < 0 || !s_rpc_sall(svc, "GH3X_ChipCtrl", params, n)) return false;
 
-        /* Build u16 array of [addr0, val0, addr1, val1, ...] */
-        uint16_t u16_pairs[128 * 2];
-        int pair_count = (count > 128) ? 128 : count;
+        /* Step 1: download_config(0) — 开始 */
+        n = gh_rpc_pack_u8(params, (int)sizeof(params), 0U, true);
+        if (n < 0 || !s_rpc_sall(svc, "download_config", params, n)) return false;
+
+        /* Step 2: GH3X_RegsListWriteCmd(pairs) */
+        int pair_count = (count > 200) ? 200 : (int)count;
+        uint16_t u16_pairs[200 * 2];
         for (int i = 0; i < pair_count; i++) {
             u16_pairs[i * 2]     = regs[i].addr;
             u16_pairs[i * 2 + 1] = regs[i].data;
         }
+        /* arr_params 需要足够大：2 + pair_count*2*2 bytes（每段最多255个u16）*/
         uint8_t arr_params[GH_RPC_FRAME_MAX];
         int arr_len = gh_rpc_pack_u16_array(arr_params, (int)sizeof(arr_params),
                                              u16_pairs, pair_count * 2, true);
-        if (arr_len < 0 || !s_rpc_send(svc, "GH3X_RegsListWriteCmd", arr_params, arr_len)) return false;
+        if (arr_len < 0 || !s_rpc_sall(svc, "GH3X_RegsListWriteCmd", arr_params, arr_len)) return false;
 
-        /* Step 3: download_config end */
-        n = gh_rpc_pack_u8(params, (int)sizeof(params), 1, true);
-        return s_rpc_send(svc, "download_config", params, n);
+        /* Step 3: download_config(1) — 结束 */
+        n = gh_rpc_pack_u8(params, (int)sizeof(params), 1U, true);
+        return s_rpc_sall(svc, "download_config", params, n);
     }
     return gh_cmd_config_download(&svc->parser, regs, count);
 }
@@ -450,7 +578,7 @@ bool gh_service_register_rw(gh_service_t* svc, const gh_cmd_param_t* param) {
             int arr_len = gh_rpc_pack_u16_array(params, (int)sizeof(params),
                                                  u16_pairs, cnt * 2, true);
             if (arr_len < 0) return false;
-            return s_rpc_send(svc, "GH3X_RegsListWriteCmd", params, arr_len);
+            return s_rpc_sall(svc, "GH3X_RegsListWriteCmd", params, arr_len);
         }
         return false;
     }
@@ -470,11 +598,11 @@ gh_device_state_t gh_service_get_state(const gh_service_t* svc) {
 bool gh_service_cardiff_control(gh_service_t* svc, uint8_t ctrl_val) {
     if (!svc || !gh_service_is_connected(svc)) return false;
     if (svc->use_chelsea_a_parser) {
-        /* Chelsea A: GH3X_ChipCtrl(ctrl: u8) */
+        /* Chelsea A: GH3X_ChipCtrl(ctrl: u8) — sall（原始协议抓包确认为 sall）*/
         uint8_t params[2];
         int n = gh_rpc_pack_u8(params, (int)sizeof(params), ctrl_val, true);
         if (n < 0) return false;
-        return s_rpc_send(svc, "GH3X_ChipCtrl", params, n);
+        return s_rpc_sall(svc, "GH3X_ChipCtrl", params, n);
     }
     return gh_cmd_cardiff_control(&svc->parser, ctrl_val);
 }
@@ -504,7 +632,30 @@ bool gh_service_set_work_mode(gh_service_t* svc, uint8_t mode, uint32_t func_mas
         n = gh_rpc_pack_u8(params + plen, (int)sizeof(params) - plen, mode, true);
         if (n < 0) return false;
         plen += n;
-        return s_rpc_send(svc, "GH3X_SwFunctionCmd", params, plen);
+        return s_rpc_sall(svc, "GH3X_SwFunctionCmd", params, plen);
     }
     return gh_cmd_set_work_mode(&svc->parser, mode, func_mask);
+}
+
+void gh_service_set_csv_name(gh_service_t *svc, const char *config_name) {
+    if (!svc) return;
+    if (!config_name || config_name[0] == '\0') {
+        svc->csv_filename[0] = '\0';
+        return;
+    }
+    /* 去掉扩展名（如 "test.config" → "test"），然后加上 ".csv" */
+    /* 先找最后一个斜杠（basename）*/
+    const char *base = config_name;
+    for (const char *p = config_name; *p; p++) {
+        if (*p == '/' || *p == '\\') base = p + 1;
+    }
+    /* 找最后一个点（扩展名）*/
+    const char *dot = NULL;
+    for (const char *p = base; *p; p++) {
+        if (*p == '.') dot = p;
+    }
+    size_t stem_len = dot ? (size_t)(dot - base) : strlen(base);
+    if (stem_len >= sizeof(svc->csv_filename) - 5) stem_len = sizeof(svc->csv_filename) - 5;
+    memcpy(svc->csv_filename, base, stem_len);
+    memcpy(svc->csv_filename + stem_len, ".csv", 5);
 }
