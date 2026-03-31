@@ -57,6 +57,7 @@
 #define GH_GSENSOR_MAX           (6)  // Assuming max 3 for acc + 3 for gyro
 #define GH_ALG_RESULTS_MAX       (32)
 #define GH_AGC_INFO_MAX          (32)
+#define GH_PROTOCOL_OUT_FRAME_MAX (16)
 
 /*
  * ENUMERATIONS FOR ALGORITHM DATA INDEXES
@@ -147,6 +148,7 @@ int32_t gh_protocol_bytes_to_rawdata(data_frame_t* data, uint8_t* buffer, int32_
     if (data->pack_header.rawdata_en) 
     {
         gh_protocol_bytes_read(buffer, &pos, &data->rawdata_size, 1);
+        if (data->rawdata_size < 0 || data->rawdata_size > GH_RAWDATA_MAX) return -1;
         gh_protocol_bytes_read(buffer, &pos, data->p_rawdata, data->rawdata_size);
     }
 
@@ -154,6 +156,7 @@ int32_t gh_protocol_bytes_to_rawdata(data_frame_t* data, uint8_t* buffer, int32_
     if (data->pack_header.phy_value_en) 
     {
         gh_protocol_bytes_read(buffer, &pos, &data->phy_value_size, 1);
+        if (data->phy_value_size < 0 || data->phy_value_size > GH_PHY_VALUE_MAX) return -1;
         gh_protocol_bytes_read(buffer, &pos, data->p_phy_value, data->phy_value_size);
     }
 
@@ -161,6 +164,7 @@ int32_t gh_protocol_bytes_to_rawdata(data_frame_t* data, uint8_t* buffer, int32_
     if (data->pack_header.gs_data_en) 
     {
         gh_protocol_bytes_read(buffer, &pos, &data->gs_data_size, 1);
+        if (data->gs_data_size < 0 || data->gs_data_size > GH_GSENSOR_MAX) return -1;
         gh_protocol_bytes_read(buffer, &pos, data->p_gs_data, data->gs_data_size);
     }
 
@@ -168,6 +172,7 @@ int32_t gh_protocol_bytes_to_rawdata(data_frame_t* data, uint8_t* buffer, int32_
     if (data->pack_header.flags_en) 
     {
         gh_protocol_bytes_read(buffer, &pos, &data->flag_data_bits, 1);
+        if (data->flag_data_bits < 0 || data->flag_data_bits > GH_FLAGS_MAX) return -1;
         gh_protocol_bytes_read(buffer, &pos, data->p_flags, data->flag_data_bits);
     }
 
@@ -175,6 +180,7 @@ int32_t gh_protocol_bytes_to_rawdata(data_frame_t* data, uint8_t* buffer, int32_
     if (data->pack_header.alg_data_en) 
     {
         gh_protocol_bytes_read(buffer, &pos, &data->algo_data_bits, 1);
+        if (data->algo_data_bits < 0 || data->algo_data_bits > GH_ALG_RESULTS_MAX - 1) return -1;
         gh_protocol_bytes_read(buffer, &pos, data->p_algo_data, data->algo_data_bits);
     }
 
@@ -182,6 +188,7 @@ int32_t gh_protocol_bytes_to_rawdata(data_frame_t* data, uint8_t* buffer, int32_
     if (data->pack_header.agc_info_en) 
     {
         gh_protocol_bytes_read(buffer, &pos, &data->agc_info_size, 1);
+        if (data->agc_info_size < 0 || data->agc_info_size > GH_AGC_INFO_MAX) return -1;
         gh_protocol_bytes_read(buffer, &pos, data->p_agc_info, data->agc_info_size);
         gh_protocol_bytes_read(buffer, &pos, data->p_agc_info_high, data->agc_info_size);
     }
@@ -487,6 +494,9 @@ void gh_protocol_process(gh_func_frame_t** p_func_frames, uint8_t* frame_len, ui
     gh_func_frame_t* frame_array = *p_func_frames;
     
     while (pos < len) {
+        if (*frame_len >= GH_PROTOCOL_OUT_FRAME_MAX) {
+            break;
+        }
         // Process single frame
         uint32_t processed_len = gh_protocol_process_single_frame(
             &frame_array[*frame_len], 

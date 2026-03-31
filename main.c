@@ -68,12 +68,17 @@ static void s_on_data_frame(const gh_data_frame_t *frame, void *ctx) {
 
 static void s_on_log(const char *msg, void *ctx) {
     gh_api_t *api = (gh_api_t *)ctx;
-    printf("%s\n", msg);
+    bool is_tx = (msg && msg[0] == '[' && msg[1] == 'T' && msg[2] == 'X' && msg[3] == ']');
+    bool is_rx = (msg && msg[0] == '[' && msg[1] == 'R' && msg[2] == 'X' && msg[3] == ']');
+    /* 高频 TX/RX 原始日志不打印到控制台，避免长时间运行被 stdout 阻塞拖慢。 */
+    if (!is_tx && !is_rx) {
+        printf("%s\n", msg);
+    }
     if (api && msg) {
         /* 根据前缀判断方向，推送到前端调试窗口 */
         const char *dir = "info";
-        if (msg[0] == '[' && msg[1] == 'T' && msg[2] == 'X' && msg[3] == ']') dir = "tx";
-        else if (msg[0] == '[' && msg[1] == 'R' && msg[2] == 'X' && msg[3] == ']') dir = "rx";
+        if (is_tx) dir = "tx";
+        else if (is_rx) dir = "rx";
         gh_api_push_log(api, msg, dir);
     }
 }

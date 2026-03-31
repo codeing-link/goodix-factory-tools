@@ -79,6 +79,8 @@ typedef struct {
     /* CSV 数据保存 */
     FILE             *csv_fp;            /* CSV 文件句柄，NULL 表示未打开 */
     char              csv_filename[256]; /* CSV 文件名（由 config 文件名衍生）*/
+    gh_mutex_t         csv_lock;         /* 保护 csv_fp 的跨线程访问 */
+    uint32_t           csv_rows_written; /* 当前 CSV 已写入的数据行数（不含表头）*/
 
     /* 向 API 层的回调 */
     gh_svc_on_state_cb on_state;
@@ -213,6 +215,13 @@ bool gh_service_set_work_mode(gh_service_t* svc, uint8_t mode, uint32_t func_mas
  * @param config_name 配置文件名（不含路径，不含扩展名；传 NULL 清空）
  */
 void gh_service_set_csv_name(gh_service_t *svc, const char *config_name);
+
+/**
+ * @brief 获取当前 CSV 已写入行数（不含表头）
+ * @param svc 服务实例
+ * @return 行数
+ */
+uint32_t gh_service_get_csv_rows_written(gh_service_t *svc);
 
 #ifdef __cplusplus
 }

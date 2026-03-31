@@ -41,6 +41,8 @@
 /* WebSocket 标记（存在 mg_connection->data[0]）*/
 #define WS_MARK     'W'
 #define GH_HTTP_MAX_CONFIG_REGS 200
+#define GH_API_MAX_DRAIN_FRAMES_PER_TICK  256
+#define GH_API_MAX_DRAIN_LOGS_PER_TICK    512
 
 /* ============================================================
  * 内部辅助：简单 JSON 字段提取
@@ -267,6 +269,20 @@ static void s_handle_status(struct mg_connection *c,
              api->service ? api->service->serial_cfg.baud_rate : 0,
              (api->service == NULL || !gh_service_is_connected(api->service))
                  ? "true" : "false");
+    s_reply_ok(c, data);
+}
+
+/** GET /api/build_info */
+static void s_handle_build_info(struct mg_connection *c,
+                                struct mg_http_message *hm) {
+    (void)hm;
+    /* 由编译器在编译该源文件时注入，后端重新编译后自动更新 */
+    const char *build_date = __DATE__;
+    const char *build_time = __TIME__;
+    char data[256];
+    snprintf(data, sizeof(data),
+             "{\"backend_version\":\"V1.00\",\"build_time\":\"%s %s\"}",
+             build_date, build_time);
     s_reply_ok(c, data);
 }
 
@@ -509,6 +525,23 @@ static void s_handle_get_data(struct mg_connection *c,
     s_reply_ok(c, data);
 }
 
+/** GET /api/device/csv_rows
+ *  返回当前采样 CSV 已写入行数（不含表头）
+ */
+static void s_handle_csv_rows(struct mg_connection *c,
+                              struct mg_http_message *hm,
+                              gh_api_t *api) {
+    (void)hm;
+    if (!api || !api->service) {
+        s_reply_err(c, -31, "no_service");
+        return;
+    }
+    uint32_t rows = gh_service_get_csv_rows_written(api->service);
+    char data[160];
+    snprintf(data, sizeof(data), "{\"rows\":%u}", (unsigned)rows);
+    s_reply_ok(c, data);
+}
+
 /** POST /api/csv/led_metrics
  *  Body: {"csv_name":"LPCTR_xxx.csv"}
  *  规则：
@@ -637,7 +670,7 @@ static void s_handle_csv_led_metrics(struct mg_connection *c,
  *   2) 取前半段通道 [0, N/2-1]
  *   3) 每个通道取最新100点，做 0.5Hz 高通(7阶, fs=100)
  *   4) 计算标准差 x = std(filtered)
- *   5) 噪声电压 = x / (2^23) * 1.8 * 1000000
+ *   5) 噪声电压 = x / (2^24) * 1.8 * 1000000
  *   6) 返回每通道噪声数组 values，并附带平均值 noise_value
  */
 static void s_handle_csv_noise_metric(struct mg_connection *c,
@@ -743,7 +776,7 @@ static void s_handle_csv_noise_metric(struct mg_connection *c,
         0.90744853978126, -5.44469123868758, 13.61172809671895, -18.14897079562527,
         13.61172809671895, -5.44469123868758, 0.90744853978126, 0.0
     };
-    const double ADC_OFFSET = 8388608.0;
+    const double ADC_OFFSET = 16777216.0; /* 2^24 */
 
     double noise_sum_uv = 0.0;
     int noise_cnt = 0;
@@ -907,6 +940,10 @@ static void s_mongoose_handler(struct mg_connection *c,
             s_handle_protocol(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/data")) {
             s_handle_get_data(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/device/csv_rows")) {
+            s_handle_csv_rows(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/build_info")) {
+            s_handle_build_info(c, hm);
         } else if (s_uri_eq(hm, "/api/serial/list")) {
             s_handle_serial_list(c, hm);
         } else if (s_uri_starts(hm, "/api/")) {
@@ -1002,8 +1039,9 @@ void gh_api_run(gh_api_t *api) {
         mg_mgr_poll(mgr, 50);
 
         /* 2. Drain 帧队列，广播到所有 WebSocket 客户端 */
+        int frame_budget = GH_API_MAX_DRAIN_FRAMES_PER_TICK;
         GH_MUTEX_LOCK(&api->queue.lock);
-        while (api->queue.count > 0) {
+        while (api->queue.count > 0 && frame_budget-- > 0) {
             /* 取出队头帧（拷贝出来再解锁，避免持锁时间过长）*/
             gh_data_frame_t frame = api->queue.frames[api->queue.head];
             api->queue.head = (api->queue.head + 1) % GH_API_QUEUE_SIZE;
@@ -1021,8 +1059,9 @@ void gh_api_run(gh_api_t *api) {
         GH_MUTEX_UNLOCK(&api->queue.lock);
 
         /* 3. Drain 日志队列，广播到所有 WebSocket 客户端（调试窗口）*/
+        int log_budget = GH_API_MAX_DRAIN_LOGS_PER_TICK;
         GH_MUTEX_LOCK(&api->log_queue.lock);
-        while (api->log_queue.count > 0) {
+        while (api->log_queue.count > 0 && log_budget-- > 0) {
             gh_log_msg_t lmsg = api->log_queue.msgs[api->log_queue.head];
             api->log_queue.head = (api->log_queue.head + 1) % GH_API_LOG_QUEUE_SIZE;
             api->log_queue.count--;

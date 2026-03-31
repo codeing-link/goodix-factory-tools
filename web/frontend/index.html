@@ -54,6 +54,23 @@
       align-items: center;
       gap: 0.6rem;
     }
+    .version-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 0.12rem;
+      margin-left: 0.75rem;
+      padding: 0.26rem 0.56rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.42);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .version-line {
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      line-height: 1.2;
+      white-space: nowrap;
+    }
     .logo-icon {
       width: 36px; height: 36px;
       background: linear-gradient(135deg, var(--primary), #8b5cf6);
@@ -202,6 +219,21 @@
       border: 1px solid var(--border);
     }
     .btn-outline:hover { border-color: var(--primary); color: var(--primary); }
+    .btn:disabled {
+      background: #4b5563 !important;
+      border-color: #6b7280 !important;
+      color: #cbd5e1 !important;
+      box-shadow: none !important;
+      filter: grayscale(0.75) brightness(0.9) !important;
+      cursor: not-allowed !important;
+      opacity: 0.72;
+      transform: none !important;
+      pointer-events: none;
+    }
+    .btn:disabled:hover {
+      box-shadow: none !important;
+      filter: grayscale(0.75) brightness(0.9) !important;
+    }
     .btn-full { width: 100%; }
     .btn-sm { padding: 0.35rem 0.75rem; font-size: 0.75rem; }
 
@@ -223,6 +255,35 @@
     }
     .func-check:hover { background: rgba(99,102,241,0.08); }
     .func-check input[type=checkbox] { accent-color: var(--primary); }
+    .func-check.disabled {
+      color: #6b7280 !important;
+      cursor: not-allowed;
+      background: rgba(107,114,128,0.12);
+    }
+    .func-check.disabled:hover {
+      background: rgba(107,114,128,0.12);
+    }
+
+    .version-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: flex-start;
+    }
+    .version-box {
+      flex: 1;
+      min-width: 0;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      line-height: 1.35;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: rgba(15, 23, 42, 0.35);
+      padding: 0.35rem 0.5rem;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-all;
+    }
 
     /* ===== 右侧：数据展示 ===== */
     .right-panel {
@@ -453,6 +514,10 @@
     <div class="logo-icon">⚡</div>
     <span class="logo-text">GH Protocol UI</span>
   </div>
+  <div class="version-panel" id="versionPanel">
+    <div class="version-line" id="webVersionText">Version: V1.00</div>
+    <div class="version-line" id="webBuildTimeText">Build: --</div>
+  </div>
   <div class="header-spacer"></div>
   <div class="ws-indicator" id="wsIndicator">
     <div class="ws-dot" id="wsDot"></div>
@@ -511,7 +576,7 @@
       <div class="form-group">
         <label class="form-label">功能通道</label>
         <div class="func-checkboxes">
-          <label class="func-check"><input type="checkbox" id="funcTest1" value="0x40" checked> Test1</label>
+          <label class="func-check" id="funcTest1Label"><input type="checkbox" id="funcTest1" value="0x40" checked> Test1</label>
         </div>
       </div>
 
@@ -546,15 +611,15 @@
       <div class="form-group" style="display:flex; gap:0.5rem; align-items:center;">
         <label class="form-label" style="width:60px;">模式选择</label>
         <select class="form-select" id="workModeSelect" style="flex:1" onchange="setWorkMode()">
-          <option value="0" selected>Mcu Online Work Mode</option>
-          <option value="1">Auto Pass Through Mode</option>
+          <option value="0">Mcu Online Work Mode</option>
+          <option value="1" selected>Auto Pass Through Mode</option>
         </select>
       </div>
 
-      <div class="form-group" style="display:flex; gap:0.5rem; align-items:center;">
+      <div class="form-group version-row">
         <label class="form-label" style="width:60px;">版本信息</label>
-        <span id="versionText" style="flex:1; font-size:0.75rem; color:var(--text-muted);">None</span>
-        <button class="btn btn-outline btn-sm" onclick="getVersion()">获取版本</button>
+        <span id="versionText" class="version-box">None</span>
+        <button class="btn btn-outline btn-sm" style="flex-shrink:0;" onclick="getVersion()">获取版本</button>
       </div>
 
       <div class="form-group" style="display:flex; gap:0.5rem; align-items:center;">
@@ -592,9 +657,20 @@
       <div class="api-grid">
         <div class="api-item"><span class="api-method m-get">GET</span><span class="api-path">/api/device/status</span></div>
         <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/connect</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/disconnect</span></div>
         <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/start</span></div>
         <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/config</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/chip_ctrl</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/work_mode</span></div>
+        <div class="api-item"><span class="api-method m-get">GET</span><span class="api-path">/api/device/version</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/read_reg</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/protocol</span></div>
         <div class="api-item"><span class="api-method m-get">GET</span><span class="api-path">/api/device/data</span></div>
+        <div class="api-item"><span class="api-method m-get">GET</span><span class="api-path">/api/device/csv_rows</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/csv/led_metrics</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/csv/noise_metric</span></div>
+        <div class="api-item"><span class="api-method m-get">GET</span><span class="api-path">/api/build_info</span></div>
+        <div class="api-item"><span class="api-method m-get">GET</span><span class="api-path">/api/serial/list</span></div>
         <div class="api-item"><span class="api-method m-ws">WS</span><span class="api-path">/ws</span></div>
       </div>
     </div>
@@ -612,10 +688,10 @@
       </div>
       <div class="led-panel-head">
         <span>阈值设置</span>
-        <label>LPCTR</label><input id="thLPCTR" class="reg-input" style="width:72px;" value="100" />
-        <label>LPLCTR</label><input id="thLPLCTR" class="reg-input" style="width:72px;" value="100" />
-        <label>BaseNoise</label><input id="thBaseNoise" class="reg-input" style="width:72px;" value="10" />
-        <label>PPGNoise</label><input id="thPPGNoise" class="reg-input" style="width:72px;" value="10" />
+        <label>LPCTR</label><input id="thLPCTR" class="reg-input" style="width:72px;" value="24" />
+        <label>LPLCTR</label><input id="thLPLCTR" class="reg-input" style="width:72px;" value="0.8" />
+        <label>BaseNoise</label><input id="thBaseNoise" class="reg-input" style="width:72px;" value="7" />
+        <label>PPGNoise</label><input id="thPPGNoise" class="reg-input" style="width:72px;" value="280" />
       </div>
       <div class="led-section">
         <div class="led-section-title" id="lpctrTitle">LPCTR</div>
@@ -658,10 +734,11 @@
         <div style="flex:1"></div>
         <input type="file" id="configFileImport" style="display:none" onchange="importConfigFile(event)">
         <input type="file" id="configDirImport" style="display:none" webkitdirectory directory multiple onchange="importConfigDirectory(event)">
-        <button class="btn btn-outline btn-sm" onclick="document.getElementById('configFileImport').click()">📁 导入配置</button>
-        <button class="btn btn-outline btn-sm" onclick="document.getElementById('configDirImport').click()" style="margin-left:4px">🤖 批量自动测试</button>
+        <button class="btn btn-outline btn-sm" id="btnImportConfig" onclick="document.getElementById('configFileImport').click()">📁 导入配置</button>
+        <button class="btn btn-outline btn-sm" id="btnAutoBatch" onclick="confirmAndPickConfigDir()" style="margin-left:4px">🤖 批量自动测试</button>
         <button class="btn btn-outline btn-sm" onclick="addRegRow()" style="margin-left:4px">+ 添加</button>
         <button class="btn btn-outline btn-sm" onclick="clearRegTable()" style="margin-left:4px">清空</button>
+        <button class="btn btn-outline btn-sm" id="regToggleBtn" onclick="toggleRegTableExpand()" style="margin-left:4px; display:none;">▾ 展开全部</button>
         <button class="btn btn-primary btn-sm" onclick="sendConfig()" style="margin-left:4px">发送</button>
       </div>
       <table class="reg-table">
@@ -672,7 +749,7 @@
           <tr>
             <td><input class="reg-input" placeholder="0x0102" /></td>
             <td><input class="reg-input" placeholder="0x0001" /></td>
-            <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()">✕</button></td>
+            <td><button class="btn btn-outline btn-sm" onclick="removeRegRow(this)">✕</button></td>
           </tr>
         </tbody>
       </table>
@@ -756,6 +833,9 @@ let waveViewMin = null;
 let waveViewMax = null;
 let waveSampleCounter = 0;
 let autoTestState = null;  /* 批量自动测试状态 */
+let currentWorkMode = 0;   /* 0: MCU Online, 1: Auto Pass Through */
+let regTableExpanded = false;
+const REG_TABLE_COLLAPSE_COUNT = 5;
 const ledProfileState = {
   LPCTR: { colors: [], values: [] },
   LPLCTR: { colors: [], values: [] }
@@ -870,7 +950,7 @@ function handleFrame(frame) {
   waveData = waveChannels[activeChannel].slice();  /* 当前显示通道 */
   waveDirty = true;
 
-  if (autoTestState && autoTestState.collecting) {
+  if (autoTestState && autoTestState.collecting && !autoTestState.useCsvRows) {
     autoTestState.collected++;
     if (autoTestState.collected % 50 === 0 || autoTestState.collected === autoTestState.target) {
       addLog(`[AUTO] ${autoTestState.name}: ${autoTestState.collected}/${autoTestState.target}`, 'info');
@@ -896,11 +976,16 @@ async function setProtocol() {
 }
 
 async function setWorkMode() {
-  const mode = parseInt(document.getElementById('workModeSelect').value);
+  const sel = document.getElementById('workModeSelect');
+  const mode = parseInt(sel.value);
   const data = await apiPost('/device/work_mode', { mode: mode, func_mask: 0xFFFFFFFF });
   if (data && data.code === 0) {
+    currentWorkMode = mode;
+    applyWorkModeUi();
     addLog(`[发送] 设置工作模式为: ${mode === 0 ? 'MCU Online' : 'Auto Pass Through'}`, 'send');
   } else {
+    sel.value = String(currentWorkMode);
+    applyWorkModeUi();
     addLog(`[ERR] 设置工作模式失败: ${data?.msg || '设备未连接'}`, 'err');
   }
 }
@@ -1235,6 +1320,7 @@ function setConnected(connected) {
     document.getElementById('stopBtn').disabled = true;
     isSampling = false;
   }
+  applyWorkModeUi();
 }
 
 /* ============================================================
@@ -1254,6 +1340,10 @@ function getSelectedFuncMask() {
 }
 
 async function startSampling() {
+  if (currentWorkMode === 1) {
+    addLog('[ERR] Auto Pass Through 模式下不允许手动采集', 'err');
+    return;
+  }
   const funcMask = getSelectedFuncMask();
   if (!funcMask) {
     addLog('[ERR] 请勾选 Test1(0x40)', 'err');
@@ -1271,6 +1361,7 @@ async function startSampling() {
     document.getElementById('statusBadge').className = 'status-badge sampling';
     document.getElementById('statusLabel').textContent = '采集中';
     addLog('[RECV] 采集已启动', 'recv');
+    applyWorkModeUi();
   } else {
     addLog('[ERR] 采集启动失败: ' + (r?.msg ?? '超时'), 'err');
   }
@@ -1286,7 +1377,32 @@ async function stopSampling() {
     document.getElementById('statusBadge').className = 'status-badge connected';
     document.getElementById('statusLabel').textContent = '已连接';
     addLog('[RECV] 采集已停止', 'recv');
+    applyWorkModeUi();
   }
+}
+
+function applyWorkModeUi() {
+  const isMcuOnline = currentWorkMode === 0;
+  const isAutoMode = currentWorkMode === 1;
+  const btnAuto = document.getElementById('btnAutoBatch');
+  const btnImport = document.getElementById('btnImportConfig');
+  const funcTest1 = document.getElementById('funcTest1');
+  const funcTest1Label = document.getElementById('funcTest1Label');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+
+  if (btnAuto) btnAuto.disabled = isMcuOnline;
+  if (btnImport) btnImport.disabled = isAutoMode;
+  if (funcTest1) funcTest1.disabled = isAutoMode;
+  if (funcTest1Label) funcTest1Label.classList.toggle('disabled', isAutoMode);
+
+  if (isAutoMode) {
+    if (startBtn) startBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = true;
+    return;
+  }
+  if (startBtn) startBtn.disabled = isConnected ? isSampling : true;
+  if (stopBtn) stopBtn.disabled = !isConnected || !isSampling;
 }
 
 /* ============================================================
@@ -1343,7 +1459,10 @@ function renderLedSection(profile, gridId, titleId) {
   const grid = document.getElementById(gridId);
   const title = document.getElementById(titleId);
   if (!grid || !title) return;
-  title.textContent = `${profile} (阈值>${threshold})`;
+  const ruleText = profile === 'LPCTR'
+    ? `阈值>${threshold} 为绿色`
+    : `阈值<${threshold} 为绿色`;
+  title.textContent = `${profile} (${ruleText})`;
   grid.innerHTML = '';
 
   const n = Math.max(colors.length, values.length);
@@ -1356,7 +1475,7 @@ function renderLedSection(profile, gridId, titleId) {
     const color = (colors[i] || 'unknown').toUpperCase();
     const value = Number(values[i]);
     const valid = Number.isFinite(value);
-    const ok = valid && value > threshold;
+    const ok = valid && (profile === 'LPCTR' ? (value > threshold) : (value < threshold));
     const card = document.createElement('div');
     card.className = 'led-card';
     card.innerHTML = `
@@ -1383,8 +1502,8 @@ function renderNoiseSection() {
   const ppgTitle = document.getElementById('ppgNoiseTitle');
   if (!baseGrid || !ppgGrid || !baseTitle || !ppgTitle) return;
 
-  baseTitle.textContent = `Base_Noise (阈值<=${getThresholdByProfile('BASE_NOISE')} 为绿色)`;
-  ppgTitle.textContent = `PPG_Noise (阈值<=${getThresholdByProfile('PPG_NOISE')} 为绿色)`;
+  baseTitle.textContent = `Base_Noise (阈值<${getThresholdByProfile('BASE_NOISE')} 为绿色)`;
+  ppgTitle.textContent = `PPG_Noise (阈值<${getThresholdByProfile('PPG_NOISE')} 为绿色)`;
 
   const items = [
     { key: 'BASE_NOISE', label: 'Base_Noise', values: (noiseState.BASE_NOISE?.values || []), grid: baseGrid },
@@ -1412,8 +1531,8 @@ function renderNoiseSection() {
     for (let i = 0; i < values.length; i++) {
       const v = Number(values[i]);
       const valid = Number.isFinite(v);
-      /* Noise 指标：超阈值=红灯，低于/等于阈值=绿灯 */
-      const ok = valid && v <= threshold;
+      /* Noise 指标：小于阈值=绿灯，否则红灯 */
+      const ok = valid && v < threshold;
       const card = document.createElement('div');
       card.className = 'led-card';
       card.innerHTML = `
@@ -1545,10 +1664,12 @@ function fillRegTable(regList) {
     tr.innerHTML = `
       <td><input class="reg-input" value="0x${r.addr}" /></td>
       <td><input class="reg-input" value="0x${r.val}" /></td>
-      <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()">✕</button></td>
+      <td><button class="btn btn-outline btn-sm" onclick="removeRegRow(this)">✕</button></td>
     `;
     tbody.appendChild(tr);
   });
+  regTableExpanded = false;
+  applyRegTableFold();
 }
 
 function readTextFile(file) {
@@ -1576,21 +1697,42 @@ async function sendConfigRegs(regs) {
 
 async function waitForAutoSamples(target = 200, timeoutMs = 45000, cfgName = '') {
   return new Promise((resolve, reject) => {
+    let pollTimer = null;
     const timer = setTimeout(() => {
       if (autoTestState) autoTestState.collecting = false;
+      if (pollTimer) clearInterval(pollTimer);
       reject(new Error(`采样超时: ${cfgName} ${target}条`));
     }, timeoutMs);
     autoTestState = {
       collecting: true,
+      useCsvRows: true,
       target,
       collected: 0,
       name: cfgName,
       done: false,
       resolve: () => {
         clearTimeout(timer);
+        if (pollTimer) clearInterval(pollTimer);
         resolve();
       }
     };
+
+    pollTimer = setInterval(async () => {
+      try {
+        if (!autoTestState || !autoTestState.collecting) return;
+        const r = await apiGet('/device/csv_rows');
+        const rows = Number(r?.data?.rows);
+        if (!Number.isFinite(rows) || rows < 0) return;
+        autoTestState.collected = rows;
+        if (rows % 50 === 0 && rows > 0) {
+          addLog(`[AUTO] ${autoTestState.name}: ${rows}/${autoTestState.target}`, 'info');
+        }
+        if (rows >= autoTestState.target && !autoTestState.done) {
+          autoTestState.done = true;
+          if (typeof autoTestState.resolve === 'function') autoTestState.resolve();
+        }
+      } catch (_) {}
+    }, 250);
   });
 }
 
@@ -1648,6 +1790,18 @@ function importConfigFile(event) {
   reader.readAsText(file);
 }
 
+function confirmAndPickConfigDir() {
+  const ok = window.confirm(
+    '上传前，请确认如下测试环境:\n' +
+    '1．黑暗环境，无白炽光干扰，无环境光干扰。\n' +
+    '(验证阶段：可用黑色隔光泡棉进行遮盖）\n' +
+    '2．白色亚克力块盖住光窗，并保持静止。\n' +
+    '3．制作成治具后，白色亚克力和光窗间隔1mm；各个治具的间隔统一。'
+  );
+  if (!ok) return;
+  document.getElementById('configDirImport').click();
+}
+
 async function importConfigDirectory(event) {
   const files = Array.from(event.target.files || []);
   if (!files.length) {
@@ -1689,7 +1843,14 @@ async function importConfigDirectory(event) {
       const file = picked[i];
       const isLast = (i === picked.length - 1);
       if (isLast) {
-        const ok = window.confirm('请先更换测试环境，完成后点击“确定”继续最后一项自动测试（LPLCTR*）。');
+        const ok = window.confirm(
+          '更换测试环境，环境要求：\n' +
+          '1．黑暗环境，无白炽光干扰，无环境光干扰。\n' +
+          '(验证阶段：可用黑色隔光泡棉对纸盒内壁包裹)\n' +
+          '(验证阶段：在无光源的会议室，关闭所有窗和灯光）\n' +
+          '2．光窗对空，保持静止。若使用黑盒，需要保持净空50cm。\n' +
+          '3．双色注塑方案的设备，可以使用黑色橡皮泥进行遮挡光窗；盖板方案只能黑暗环境对空进行测试。'
+        );
         if (!ok) {
           addLog('[AUTO] 用户取消了最后一项测试', 'info');
           break;
@@ -1787,8 +1948,20 @@ async function importConfigDirectory(event) {
     }
   } catch (err) {
     addLog(`[ERR] 批量自动测试中断: ${err?.message || err}`, 'err');
+    if (isSampling) {
+      const stopResp = await apiPost('/device/start', { ctrl: 1, mode: 0, func_mask: currentFuncMask });
+      if (stopResp && stopResp.code === 0) {
+        addLog('[AUTO] 异常中断后已自动发送停止采样', 'info');
+      } else {
+        addLog('[ERR] 异常中断后停止采样失败，请手动停止/重连设备', 'err');
+      }
+    }
   } finally {
     autoTestState = null;
+    isSampling = false;
+    applyWorkModeUi();
+    document.getElementById('statusBadge').className = isConnected ? 'status-badge connected' : 'status-badge';
+    document.getElementById('statusLabel').textContent = isConnected ? '已连接' : '未连接';
     event.target.value = '';
     addLog('[AUTO] 批量流程结束', 'info');
   }
@@ -1796,6 +1969,7 @@ async function importConfigDirectory(event) {
 
 function clearRegTable() {
   document.getElementById('regTableBody').innerHTML = '';
+  applyRegTableFold();
   addLog('[INFO] 已清空寄存器配置表', 'info');
 }
 
@@ -1806,8 +1980,38 @@ function addRegRow() {
   tr.innerHTML = `
     <td><input class="reg-input" placeholder="0x0102" /></td>
     <td><input class="reg-input" placeholder="0x0001" /></td>
-    <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()">✕</button></td>`;
+    <td><button class="btn btn-outline btn-sm" onclick="removeRegRow(this)">✕</button></td>`;
   tbody.appendChild(tr);
+  applyRegTableFold();
+}
+
+function removeRegRow(btn) {
+  btn.closest('tr')?.remove();
+  applyRegTableFold();
+}
+
+function toggleRegTableExpand() {
+  regTableExpanded = !regTableExpanded;
+  applyRegTableFold();
+}
+
+function applyRegTableFold() {
+  const tbody = document.getElementById('regTableBody');
+  const toggleBtn = document.getElementById('regToggleBtn');
+  if (!tbody || !toggleBtn) return;
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const needFold = rows.length > REG_TABLE_COLLAPSE_COUNT;
+  if (!needFold) {
+    rows.forEach(r => { r.style.display = ''; });
+    toggleBtn.style.display = 'none';
+    regTableExpanded = false;
+    return;
+  }
+  toggleBtn.style.display = '';
+  rows.forEach((r, idx) => {
+    r.style.display = (regTableExpanded || idx < REG_TABLE_COLLAPSE_COUNT) ? '' : 'none';
+  });
+  toggleBtn.textContent = regTableExpanded ? '▴ 收起' : `▾ 展开全部 (${rows.length})`;
 }
 
 async function sendConfig() {
@@ -1879,6 +2083,55 @@ function escapeHtml(str) {
   return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+function formatDateTimeYmdHms(d) {
+  const dt = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(dt.getTime())) return '--';
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const y = dt.getFullYear();
+  const m = pad2(dt.getMonth() + 1);
+  const day = pad2(dt.getDate());
+  const hh = pad2(dt.getHours());
+  const mm = pad2(dt.getMinutes());
+  const ss = pad2(dt.getSeconds());
+  return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+}
+
+function parseCDateTimeToYmdHms(s) {
+  /* 解析 C 宏格式： "Mar 31 2026 13:22:10" */
+  const t = String(s || '').trim();
+  const m = t.match(/^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const monthMap = {
+    Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6,
+    Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12
+  };
+  const mm = monthMap[m[1]];
+  if (!mm) return null;
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const day = pad2(parseInt(m[2], 10));
+  return `${m[3]}-${pad2(mm)}-${day} ${m[4]}:${m[5]}:${m[6]}`;
+}
+
+async function refreshBuildInfoBanner() {
+  const versionNode = document.getElementById('webVersionText');
+  const buildNode = document.getElementById('webBuildTimeText');
+  if (!versionNode || !buildNode) return;
+
+  const r = await apiGet('/build_info');
+  if (r && r.code === 0 && r.data) {
+    const ver = String(r.data.backend_version || 'V1.00');
+    const btRaw = String(r.data.build_time || '');
+    const btFmt = parseCDateTimeToYmdHms(btRaw) || btRaw || '--';
+    versionNode.textContent = `Version: ${ver}`;
+    buildNode.textContent = `Build: ${btFmt}`;
+    return;
+  }
+
+  const fallbackTs = document.lastModified ? new Date(document.lastModified) : new Date();
+  versionNode.textContent = 'Version: V1.00';
+  buildNode.textContent = `Build: ${formatDateTimeYmdHms(fallbackTs)}`;
+}
+
 /* ============================================================
  * 后端存活检测（每5秒轮询 /api/device/status）
  * 在 WebSocket 已连接时跳过
@@ -1904,9 +2157,13 @@ async function checkBackend() {
  * 初始化
  * ============================================================ */
 window.addEventListener('DOMContentLoaded', () => {
+  refreshBuildInfoBanner();
+  currentWorkMode = parseInt(document.getElementById('workModeSelect')?.value || '0');
   drawWaveform();
   scheduleWaveRender();
   renderLedPanelAll();
+  applyRegTableFold();
+  applyWorkModeUi();
   ['thLPCTR', 'thLPLCTR', 'thBaseNoise', 'thPPGNoise'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => renderLedPanelAll());
   });

@@ -303,9 +303,17 @@ static unsigned __stdcall s_rx_thread(void* arg) {
         DWORD bytesRead = 0;
         uint16_t space = GH_TRANSPORT_RX_BUF_SIZE - t->rx_tail;
         if (space == 0) {
-            memmove(t->rx_buf, &t->rx_buf[t->rx_head], t->rx_tail - t->rx_head);
-            t->rx_tail -= t->rx_head;
-            t->rx_head = 0;
+            if (t->rx_head > 0) {
+                memmove(t->rx_buf, &t->rx_buf[t->rx_head], t->rx_tail - t->rx_head);
+                t->rx_tail -= t->rx_head;
+                t->rx_head = 0;
+            } else {
+                /* 缓冲区完全占满且无法再压缩，丢弃积压避免读线程卡死 */
+                if (t->log_cb) t->log_cb("[Transport] RX buffer overflow, drop buffered bytes", t->log_ctx);
+                t->rx_head = 0;
+                t->rx_tail = 0;
+                t->frame_timeout_armed = false;
+            }
             space = GH_TRANSPORT_RX_BUF_SIZE - t->rx_tail;
         }
 
@@ -368,10 +376,18 @@ static void* s_rx_thread(void* arg) {
             uint16_t space = GH_TRANSPORT_RX_BUF_SIZE - t->rx_tail;
             if (space == 0) {
                 /* 缓冲区已满，合并或清空 */
-                memmove(t->rx_buf, &t->rx_buf[t->rx_head],
-                        t->rx_tail - t->rx_head);
-                t->rx_tail -= t->rx_head;
-                t->rx_head = 0;
+                if (t->rx_head > 0) {
+                    memmove(t->rx_buf, &t->rx_buf[t->rx_head],
+                            t->rx_tail - t->rx_head);
+                    t->rx_tail -= t->rx_head;
+                    t->rx_head = 0;
+                } else {
+                    /* 满缓冲且无可压缩空间：丢弃积压，避免出现 read(...,0) 导致线程退出 */
+                    if (t->log_cb) t->log_cb("[Transport] RX buffer overflow, drop buffered bytes", t->log_ctx);
+                    t->rx_head = 0;
+                    t->rx_tail = 0;
+                    t->frame_timeout_armed = false;
+                }
                 space = GH_TRANSPORT_RX_BUF_SIZE - t->rx_tail;
             }
 
@@ -398,8 +414,8 @@ static void* s_rx_thread(void* arg) {
                 t->rx_tail += (uint16_t)n;
                 s_process_rx_buffer(t);
             } else if (n == 0) {
-                /* 串口关闭或EOF */
-                break;
+                /* 非阻塞串口上 n==0 可能是瞬态，避免误退出接收线程 */
+                continue;
             }
         }
 
@@ -428,10 +444,15 @@ void gh_transport_init(gh_transport_t* t,
     t->on_connect_ctx = conn_ctx;
     t->log_cb         = log_cb;
     t->log_ctx        = log_ctx;
+    t->rx_thread_started = false;
+    t->rx_thread_running = false;
 }
 
 bool gh_transport_open_serial(gh_transport_t* t, const gh_serial_config_t* cfg) {
     if (!t || !cfg) return false;
+
+    /* 防御：重新打开串口前确保接收线程完全退出，避免旧线程读新句柄 */
+    gh_transport_stop_rx_thread(t);
     
 #ifdef _WIN32
     if (t->serial_fd != 0 && t->serial_fd != -1) {
@@ -503,7 +524,7 @@ bool gh_transport_open_serial(gh_transport_t* t, const gh_serial_config_t* cfg) 
 
 void gh_transport_close(gh_transport_t* t) {
     if (!t) return;
-    t->rx_thread_running = false;
+    gh_transport_stop_rx_thread(t);
     
 #ifdef _WIN32
     if (t->serial_fd != -1 && t->serial_fd != 0) {
@@ -571,6 +592,10 @@ void gh_transport_feed(gh_transport_t* t, const uint8_t* data, uint16_t len) {
 
 bool gh_transport_start_rx_thread(gh_transport_t* t) {
     gh_thread_t tid;
+    if (!t) return false;
+    if (t->rx_thread_started && t->rx_thread_running) {
+        return true;
+    }
     t->rx_thread_running = true;
     
 #ifdef _WIN32
@@ -579,17 +604,31 @@ bool gh_transport_start_rx_thread(gh_transport_t* t) {
         t->rx_thread_running = false;
         return false;
     }
+    t->rx_thread = tid;
+    t->rx_thread_started = true;
 #else
     if (pthread_create(&tid, NULL, s_rx_thread, t) != 0) {
         t->rx_thread_running = false;
         return false;
     }
-    pthread_detach(tid); /* 不需要join，自动回收 */
+    t->rx_thread = tid;
+    t->rx_thread_started = true;
 #endif
 
     return true;
 }
 
 void gh_transport_stop_rx_thread(gh_transport_t* t) {
-    if (t) t->rx_thread_running = false;
+    if (!t) return;
+    t->rx_thread_running = false;
+    if (!t->rx_thread_started) return;
+
+#ifdef _WIN32
+    /* 线程循环每50ms检查标志位，INFINITE等待可确保完全退出 */
+    WaitForSingleObject((HANDLE)t->rx_thread, INFINITE);
+    CloseHandle((HANDLE)t->rx_thread);
+#else
+    pthread_join(t->rx_thread, NULL);
+#endif
+    t->rx_thread_started = false;
 }

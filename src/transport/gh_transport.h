@@ -94,6 +94,8 @@ typedef struct {
 
     /* 接收线程运行标志 */
     volatile bool rx_thread_running;
+    gh_thread_t    rx_thread;
+    bool           rx_thread_started;
 } gh_transport_t;
 
 /* ============================================================

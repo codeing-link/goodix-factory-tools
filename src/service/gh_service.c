@@ -119,18 +119,11 @@ static void s_on_transport_frame(const uint8_t* frame, uint16_t len, void* ctx) 
 
         if (rpc_key[0] == 'G' && rpc_key[1] == '\0') {
             /* 设备发送传感器数据帧 (key="G") */
-            const uint8_t *raw_data = NULL;
-            int raw_len = 0;
-            if (!gh_rpc_extract_u8_array(rpc_params, rpc_params_len, &raw_data, &raw_len)
-                || !raw_data || raw_len <= 0) {
-                if (svc->on_log) svc->on_log("[RPC] key=G: no u8* array found", svc->on_log_ctx);
-                return;
-            }
-
             static gh_func_frame_t chelsea_frames[16];
             static uint32_t chelsea_algo_res[16 * 16];
             static gh_frame_data_t chelsea_frame_data[16 * 32];
             static bool chelsea_init = false;
+            static uint32_t g_no_u8_array_count = 0;
 
             if (!chelsea_init) {
                 for (int i = 0; i < 16; i++) {
@@ -141,10 +134,37 @@ static void s_on_transport_frame(const uint8_t* frame, uint16_t len, void* ctx) 
                 chelsea_init = true;
             }
 
+            const uint8_t *raw_data = NULL;
+            int raw_len = 0;
+            bool has_u8_arr = gh_rpc_extract_u8_array(rpc_params, rpc_params_len, &raw_data, &raw_len);
+            bool used_fallback = false;
+            if (!has_u8_arr || !raw_data || raw_len <= 0) {
+                /* 部分固件/场景下 key=G 参数可能不是 u8* 数组；降级尝试直接用 params 解包。 */
+                raw_data = rpc_params;
+                raw_len = rpc_params_len;
+                g_no_u8_array_count++;
+                used_fallback = true;
+            }
+
             gh_func_frame_t* p_frames = chelsea_frames;
             uint8_t parsed_len = 0;
 
             gh_protocol_process(&p_frames, &parsed_len, (uint8_t*)raw_data, (uint32_t)raw_len);
+            if (used_fallback && parsed_len == 0) {
+                /* 限频日志：前3次打印，之后每50次打印一次累计计数 */
+                if (svc->on_log && (g_no_u8_array_count <= 3 || (g_no_u8_array_count % 50U) == 0U)) {
+                    char log_buf[160];
+                    snprintf(log_buf, sizeof(log_buf),
+                             "[RPC] key=G no u8* array (cnt=%u, params_len=%d, parsed=0)",
+                             (unsigned)g_no_u8_array_count, rpc_params_len);
+                    svc->on_log(log_buf, svc->on_log_ctx);
+                }
+                return;
+            }
+            if (parsed_len > 16) {
+                if (svc->on_log) svc->on_log("[RPC] key=G: parsed_len overflow, clamped to 16", svc->on_log_ctx);
+                parsed_len = 16;
+            }
 
         for (uint8_t i = 0; i < parsed_len; i++) {
             gh_data_frame_t data;
@@ -182,10 +202,13 @@ static void s_on_transport_frame(const uint8_t* frame, uint16_t len, void* ctx) 
             clock_gettime(CLOCK_REALTIME, &ts);
             data.timestamp_ms = (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
 
-            /* 写入 CSV */
+            /* 写入 CSV（与 start/stop 线程并发，需加锁） */
+            GH_MUTEX_LOCK(&svc->csv_lock);
             if (svc->csv_fp) {
                 s_csv_write_frame(svc->csv_fp, &p_frames[i], data.timestamp_ms);
+                svc->csv_rows_written++;
             }
+            GH_MUTEX_UNLOCK(&svc->csv_lock);
 
             if (svc->on_data) {
                 svc->on_data(&data, svc->on_data_ctx);
@@ -415,6 +438,8 @@ void gh_service_init(gh_service_t* svc,
     svc->use_chelsea_a_parser = true; /* Chelsea A 为默认协议 */
     /* 对齐老上位机 CardiffRPC 的 secure com_id 窗口，首个常见请求从 0x08 开始。 */
     svc->rpc_com_id   = 0x08;
+    GH_MUTEX_INIT(&svc->csv_lock);
+    svc->csv_rows_written = 0;
 
     /* 初始化默认串口配置 */
     strncpy(svc->serial_cfg.port, "/dev/ttyUSB0", sizeof(svc->serial_cfg.port));
@@ -457,10 +482,13 @@ bool gh_service_connect_serial(gh_service_t* svc, const char* port) {
 void gh_service_disconnect(gh_service_t* svc) {
     if (!svc) return;
     /* 断开时关闭 CSV（若采集中断）*/
+    GH_MUTEX_LOCK(&svc->csv_lock);
     if (svc->csv_fp) {
         fclose(svc->csv_fp);
         svc->csv_fp = NULL;
     }
+    svc->csv_rows_written = 0;
+    GH_MUTEX_UNLOCK(&svc->csv_lock);
     gh_transport_stop_rx_thread(&svc->transport);
     gh_transport_close(&svc->transport);
     gh_parser_reset(&svc->parser);
@@ -497,28 +525,37 @@ bool gh_service_start_hbd(gh_service_t* svc,
         svc->device_state = GH_DEV_STATE_SAMPLING;
         /* 开启采集：打开 CSV 文件并写入表头 */
         if (svc->csv_filename[0] != '\0') {
+            bool open_ok = false;
+            GH_MUTEX_LOCK(&svc->csv_lock);
             if (svc->csv_fp) { fclose(svc->csv_fp); svc->csv_fp = NULL; }
             svc->csv_fp = fopen(svc->csv_filename, "w");
             if (svc->csv_fp) {
                 s_csv_write_header(svc->csv_fp);
-                if (svc->on_log) {
-                    char log_buf[320];
-                    snprintf(log_buf, sizeof(log_buf), "[CSV] Saving to %s", svc->csv_filename);
-                    svc->on_log(log_buf, svc->on_log_ctx);
-                }
+                svc->csv_rows_written = 0;
+                open_ok = true;
+            }
+            GH_MUTEX_UNLOCK(&svc->csv_lock);
+            if (open_ok && svc->on_log) {
+                char log_buf[320];
+                snprintf(log_buf, sizeof(log_buf), "[CSV] Saving to %s", svc->csv_filename);
+                svc->on_log(log_buf, svc->on_log_ctx);
             }
         }
     } else if (ret && ctrl_bit == 1) {
         svc->device_state = GH_DEV_STATE_CONNECTED;
         /* 停止采集：关闭 CSV */
+        bool was_open = false;
+        GH_MUTEX_LOCK(&svc->csv_lock);
         if (svc->csv_fp) {
             fclose(svc->csv_fp);
             svc->csv_fp = NULL;
-            if (svc->on_log) {
-                char log_buf[320];
-                snprintf(log_buf, sizeof(log_buf), "[CSV] Saved to %s", svc->csv_filename);
-                svc->on_log(log_buf, svc->on_log_ctx);
-            }
+            was_open = true;
+        }
+        GH_MUTEX_UNLOCK(&svc->csv_lock);
+        if (was_open && svc->on_log) {
+            char log_buf[320];
+            snprintf(log_buf, sizeof(log_buf), "[CSV] Saved to %s", svc->csv_filename);
+            svc->on_log(log_buf, svc->on_log_ctx);
         }
     }
     if (svc->on_state) svc->on_state(svc->device_state, svc->on_state_ctx);
@@ -689,4 +726,13 @@ void gh_service_set_csv_name(gh_service_t *svc, const char *config_name) {
     if (stem_len >= sizeof(svc->csv_filename) - 5) stem_len = sizeof(svc->csv_filename) - 5;
     memcpy(svc->csv_filename, base, stem_len);
     memcpy(svc->csv_filename + stem_len, ".csv", 5);
+}
+
+uint32_t gh_service_get_csv_rows_written(gh_service_t *svc) {
+    if (!svc) return 0;
+    uint32_t rows = 0;
+    GH_MUTEX_LOCK(&svc->csv_lock);
+    rows = svc->csv_rows_written;
+    GH_MUTEX_UNLOCK(&svc->csv_lock);
+    return rows;
 }

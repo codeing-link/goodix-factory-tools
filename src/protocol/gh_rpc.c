@@ -208,38 +208,59 @@ bool gh_rpc_parse_frame(const uint8_t *frame, int len,
 
 bool gh_rpc_extract_u8_array(const uint8_t *params, int params_len,
                               const uint8_t **data_out, int *data_len) {
-    if (!params || params_len < 2 || !data_out || !data_len) return false;
+    if (!params || params_len <= 0 || !data_out || !data_len) return false;
 
-    /* TypeArray byte: is_array bit([2]) 必须为 1 */
-    uint8_t type_arr = params[0];
-    if (((type_arr >> 2) & 0x01U) == 0) return false; /* 不是数组 */
+    /* 某些固件在 u8* 前可能有标量参数，因此这里扫描参数列表，找到第一个 u8 数组 */
+    static uint8_t s_u8_buf[4096];
+    int pi = 0;
+    while (pi < params_len) {
+        uint8_t type_b  = params[pi++];
+        uint8_t is_arr  = (type_b >> 2) & 0x01U;
+        uint8_t end_b   = (type_b >> 6) & 0x01U;
+        uint8_t split_b = (type_b >> 7) & 0x01U;
+        int width_b = (1 << ((type_b >> 3) & 0x07U)) / 8;
+        if (width_b < 1) width_b = 1;
 
-    int offset = 1;
-    int total_bytes = 0;
-    const uint8_t *first_data = NULL;
-
-    /* 处理分段（split=1 时循环）*/
-    do {
-        if (offset >= params_len) return false;
-        int split = (int)((type_arr >> 7) & 0x01U);
-        int count = (int)params[offset++];
-        if (offset + count > params_len) return false;
-        if (!first_data) first_data = &params[offset];
-        total_bytes += count;
-        offset += count;
-
-        if (split) {
-            /* 读取下一段的 TypeArray 头 */
-            if (offset >= params_len) return false;
-            type_arr = params[offset++];
-        } else {
-            break;
+        if (!is_arr) {
+            if (pi + width_b > params_len) return false;
+            pi += width_b;
+            if (end_b) break;
+            continue;
         }
-    } while (true);
 
-    *data_out  = first_data;
-    *data_len  = total_bytes;
-    return true;
+        int out_len = 0;
+        do {
+            if (pi >= params_len) return false;
+            int count = (int)params[pi++];
+            int chunk_bytes = count * width_b;
+            if (chunk_bytes < 0 || pi + chunk_bytes > params_len) return false;
+
+            if (width_b == 1 && count > 0) {
+                if (out_len + count > (int)sizeof(s_u8_buf)) return false;
+                memcpy(&s_u8_buf[out_len], &params[pi], (size_t)count);
+                out_len += count;
+            }
+            pi += chunk_bytes;
+
+            if (!split_b) break;
+            if (pi >= params_len) return false;
+            type_b  = params[pi++];
+            is_arr  = (type_b >> 2) & 0x01U;
+            split_b = (type_b >> 7) & 0x01U;
+            width_b = (1 << ((type_b >> 3) & 0x07U)) / 8;
+            if (width_b < 1) width_b = 1;
+            if (!is_arr) return false;
+        } while (1);
+
+        if (out_len > 0) {
+            *data_out = s_u8_buf;
+            *data_len = out_len;
+            return true;
+        }
+        if (end_b) break;
+    }
+
+    return false;
 }
 
 bool gh_rpc_extract_u16_array(const uint8_t *params, int params_len,
