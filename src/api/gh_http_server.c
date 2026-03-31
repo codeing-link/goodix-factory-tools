@@ -26,6 +26,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <math.h>
 
 /* ============================================================
  * 常量
@@ -87,6 +88,48 @@ static long s_json_long(const char *body, size_t blen,
     long val;
     if (sscanf(found, "%ld", &val) == 1) return val;
     return dflt;
+}
+
+static int s_split_csv_line(char *line, char **cols, int max_cols) {
+    int n = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(line, "\t,\r\n", &save);
+         tok != NULL && n < max_cols;
+         tok = strtok_r(NULL, "\t,\r\n", &save)) {
+        cols[n++] = tok;
+    }
+    return n;
+}
+
+static double s_high_pass_filter(double fData,
+                                 const double *coefA, const double *coefB,
+                                 double *arrIn, double *arrOut,
+                                 int order, int *firstFlag) {
+    if (*firstFlag) {
+        memset(arrIn, 0, (size_t)order * sizeof(double));
+        memset(arrOut, 0, (size_t)order * sizeof(double));
+        double skip = fData - arrIn[order - 1];
+        for (int i = 0; i < order; i++) arrIn[i] += skip;
+        *firstFlag = 0;
+    }
+
+    double sum = 0.0;
+    for (int i = 0; i < order; i++) {
+        sum += (coefB[i + 1] * arrIn[order - i - 1]);
+    }
+    double dataBuffer1 = coefB[0] * fData + sum;
+
+    sum = 0.0;
+    for (int i = 0; i < order; i++) {
+        sum += (coefA[i + 1] * arrOut[order - i - 1]);
+    }
+    double dataOut = (dataBuffer1 - sum) / coefA[0];
+
+    for (int i = 0; i < order - 1; i++) arrIn[i] = arrIn[i + 1];
+    arrIn[order - 1] = fData;
+    for (int i = 0; i < order - 1; i++) arrOut[i] = arrOut[i + 1];
+    arrOut[order - 1] = dataOut;
+    return dataOut;
 }
 
 /* ============================================================
@@ -466,6 +509,288 @@ static void s_handle_get_data(struct mg_connection *c,
     s_reply_ok(c, data);
 }
 
+/** POST /api/csv/led_metrics
+ *  Body: {"csv_name":"LPCTR_xxx.csv"}
+ *  规则：
+ *   1) 统计 CH0..CH15 中“有非零值出现”的通道数 N
+ *   2) 取后半段通道 [N/2, N-1]
+ *   3) 每个通道平均值 ÷ 24000，返回给前端做 LED 判定
+ */
+static void s_handle_csv_led_metrics(struct mg_connection *c,
+                                     struct mg_http_message *hm,
+                                     gh_api_t *api) {
+    (void)api;
+    char csv_name[256] = {0};
+    s_json_str(hm->body.buf, hm->body.len, "csv_name", csv_name, sizeof(csv_name));
+    if (csv_name[0] == '\0') {
+        s_reply_err(c, -11, "csv_name_empty");
+        return;
+    }
+    if (strstr(csv_name, "..") || strchr(csv_name, '/') || strchr(csv_name, '\\')) {
+        s_reply_err(c, -12, "csv_name_invalid");
+        return;
+    }
+
+    FILE *fp = fopen(csv_name, "r");
+    if (!fp) {
+        s_reply_err(c, -13, "csv_open_failed");
+        return;
+    }
+
+    char line[8192];
+    if (!fgets(line, (int)sizeof(line), fp)) {
+        fclose(fp);
+        s_reply_err(c, -14, "csv_empty");
+        return;
+    }
+
+    int ch_col_idx[16];
+    for (int i = 0; i < 16; i++) ch_col_idx[i] = -1;
+    {
+        char hdr[8192];
+        strncpy(hdr, line, sizeof(hdr) - 1);
+        hdr[sizeof(hdr) - 1] = '\0';
+        char *cols[256];
+        int cn = s_split_csv_line(hdr, cols, 256);
+        for (int i = 0; i < cn; i++) {
+            for (int ch = 0; ch < 16; ch++) {
+                char key[8];
+                snprintf(key, sizeof(key), "CH%d", ch);
+                if (strcmp(cols[i], key) == 0) {
+                    ch_col_idx[ch] = i;
+                }
+            }
+        }
+    }
+
+    long rows_buf[100][16];
+    memset(rows_buf, 0, sizeof(rows_buf));
+    int row_cnt_total = 0;
+    while (fgets(line, (int)sizeof(line), fp)) {
+        char row[8192];
+        strncpy(row, line, sizeof(row) - 1);
+        row[sizeof(row) - 1] = '\0';
+        char *cols[256];
+        int cn = s_split_csv_line(row, cols, 256);
+        if (cn <= 0) continue;
+        int pos = row_cnt_total % 100;
+        for (int ch = 0; ch < 16; ch++) rows_buf[pos][ch] = 0;
+        for (int ch = 0; ch < 16; ch++) {
+            int idx = ch_col_idx[ch];
+            if (idx < 0 || idx >= cn) continue;
+            long v = strtol(cols[idx], NULL, 10);
+            rows_buf[pos][ch] = v;
+        }
+        row_cnt_total++;
+    }
+    fclose(fp);
+
+    if (row_cnt_total <= 0) {
+        s_reply_err(c, -15, "csv_no_data_rows");
+        return;
+    }
+
+    int row_cnt = row_cnt_total < 100 ? row_cnt_total : 100;
+    long long sums[16] = {0};
+    int non_zero[16] = {0};
+    int start_idx = row_cnt_total - row_cnt;
+    for (int r = 0; r < row_cnt; r++) {
+        int pos = (start_idx + r) % 100;
+        for (int ch = 0; ch < 16; ch++) {
+            long v = rows_buf[pos][ch];
+            sums[ch] += (long long)v;
+            if (v != 0) non_zero[ch] = 1;
+        }
+    }
+
+    int n_non_zero = 0;
+    for (int ch = 0; ch < 16; ch++) if (non_zero[ch]) n_non_zero++;
+    if (n_non_zero <= 0) {
+        s_reply_err(c, -16, "csv_no_non_zero_ch");
+        return;
+    }
+    if (n_non_zero > 16) n_non_zero = 16;
+
+    int start = n_non_zero / 2;
+    char values[1024] = "[";
+    int out_cnt = 0;
+    for (int ch = start; ch < n_non_zero; ch++) {
+        double avg = ((double)sums[ch] / (double)row_cnt) / 24000.0;
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), out_cnt == (n_non_zero - start - 1) ? "%.6f" : "%.6f,", avg);
+        strncat(values, tmp, sizeof(values) - strlen(values) - 1);
+        out_cnt++;
+    }
+    strncat(values, "]", sizeof(values) - strlen(values) - 1);
+
+    char data[1400];
+    snprintf(data, sizeof(data),
+             "{\"csv\":\"%s\",\"row_cnt\":%d,\"window_rows\":%d,\"non_zero_ch\":%d,\"start_ch\":%d,\"count\":%d,\"values\":%s}",
+             csv_name, row_cnt_total, row_cnt, n_non_zero, start, out_cnt, values);
+    s_reply_ok(c, data);
+}
+
+/** POST /api/csv/noise_metric
+ *  Body: {"csv_name":"Base_Noise_xxx.csv"}
+ *  规则：
+ *   1) 查找 CH0..CH15 中有非零值的通道数 N
+ *   2) 取前半段通道 [0, N/2-1]
+ *   3) 每个通道取最新100点，做 0.5Hz 高通(7阶, fs=100)
+ *   4) 计算标准差 x = std(filtered)
+ *   5) 噪声电压 = x / (2^23) * 1.8 * 1000000
+ *   6) 返回每通道噪声数组 values，并附带平均值 noise_value
+ */
+static void s_handle_csv_noise_metric(struct mg_connection *c,
+                                      struct mg_http_message *hm,
+                                      gh_api_t *api) {
+    (void)api;
+    char csv_name[256] = {0};
+    s_json_str(hm->body.buf, hm->body.len, "csv_name", csv_name, sizeof(csv_name));
+    if (csv_name[0] == '\0') {
+        s_reply_err(c, -21, "csv_name_empty");
+        return;
+    }
+    if (strstr(csv_name, "..") || strchr(csv_name, '/') || strchr(csv_name, '\\')) {
+        s_reply_err(c, -22, "csv_name_invalid");
+        return;
+    }
+
+    FILE *fp = fopen(csv_name, "r");
+    if (!fp) {
+        s_reply_err(c, -23, "csv_open_failed");
+        return;
+    }
+
+    char line[8192];
+    if (!fgets(line, (int)sizeof(line), fp)) {
+        fclose(fp);
+        s_reply_err(c, -24, "csv_empty");
+        return;
+    }
+
+    int ch_col_idx[16];
+    for (int i = 0; i < 16; i++) ch_col_idx[i] = -1;
+    {
+        char hdr[8192];
+        strncpy(hdr, line, sizeof(hdr) - 1);
+        hdr[sizeof(hdr) - 1] = '\0';
+        char *cols[256];
+        int cn = s_split_csv_line(hdr, cols, 256);
+        for (int i = 0; i < cn; i++) {
+            for (int ch = 0; ch < 16; ch++) {
+                char key[8];
+                snprintf(key, sizeof(key), "CH%d", ch);
+                if (strcmp(cols[i], key) == 0) ch_col_idx[ch] = i;
+            }
+        }
+    }
+
+    long rows_buf[100][16];
+    memset(rows_buf, 0, sizeof(rows_buf));
+    int row_cnt_total = 0;
+    while (fgets(line, (int)sizeof(line), fp)) {
+        char row[8192];
+        strncpy(row, line, sizeof(row) - 1);
+        row[sizeof(row) - 1] = '\0';
+        char *cols[256];
+        int cn = s_split_csv_line(row, cols, 256);
+        if (cn <= 0) continue;
+        int pos = row_cnt_total % 100;
+        for (int ch = 0; ch < 16; ch++) rows_buf[pos][ch] = 0;
+        for (int ch = 0; ch < 16; ch++) {
+            int idx = ch_col_idx[ch];
+            if (idx < 0 || idx >= cn) continue;
+            rows_buf[pos][ch] = strtol(cols[idx], NULL, 10);
+        }
+        row_cnt_total++;
+    }
+    fclose(fp);
+
+    if (row_cnt_total <= 0) {
+        s_reply_err(c, -25, "csv_no_data_rows");
+        return;
+    }
+    int row_cnt = row_cnt_total < 100 ? row_cnt_total : 100;
+    int start_idx = row_cnt_total - row_cnt;
+
+    int non_zero[16] = {0};
+    for (int r = 0; r < row_cnt; r++) {
+        int pos = (start_idx + r) % 100;
+        for (int ch = 0; ch < 16; ch++) {
+            if (rows_buf[pos][ch] != 0) non_zero[ch] = 1;
+        }
+    }
+    int n_non_zero = 0;
+    for (int ch = 0; ch < 16; ch++) if (non_zero[ch]) n_non_zero++;
+    if (n_non_zero <= 0) {
+        s_reply_err(c, -26, "csv_no_non_zero_ch");
+        return;
+    }
+    if (n_non_zero > 16) n_non_zero = 16;
+
+    int use_ch = n_non_zero / 2;
+    if (use_ch <= 0) {
+        s_reply_err(c, -27, "csv_not_enough_ch");
+        return;
+    }
+
+    const int ORDER = 7;
+    const double coefA[8] = {
+        1.00000000000000, -5.80579309703828, 14.04773386830920, -18.13186088426856,
+        13.16715655966765, -5.10069928436602, 0.82346285235115, 0.0
+    };
+    const double coefB[8] = {
+        0.90744853978126, -5.44469123868758, 13.61172809671895, -18.14897079562527,
+        13.61172809671895, -5.44469123868758, 0.90744853978126, 0.0
+    };
+    const double ADC_OFFSET = 8388608.0;
+
+    double noise_sum_uv = 0.0;
+    int noise_cnt = 0;
+    double per_ch_noise_uv[16] = {0};
+    for (int ch = 0; ch < use_ch; ch++) {
+        double arrIn[7] = {0};
+        double arrOut[7] = {0};
+        int firstFlag = 1;
+        double filtered[100];
+
+        for (int r = 0; r < row_cnt; r++) {
+            int pos = (start_idx + r) % 100;
+            filtered[r] = s_high_pass_filter((double)rows_buf[pos][ch], coefA, coefB, arrIn, arrOut, ORDER, &firstFlag);
+        }
+
+        double sum = 0.0;
+        for (int r = 0; r < row_cnt; r++) sum += filtered[r];
+        double avg = sum / (double)row_cnt;
+
+        double var_sum = 0.0;
+        for (int r = 0; r < row_cnt; r++) {
+            double d = filtered[r] - avg;
+            var_sum += d * d;
+        }
+        double std_raw = sqrt(var_sum / (double)row_cnt);
+        double noise_uv = std_raw * 1.8 * 1000000.0 / ADC_OFFSET;
+        per_ch_noise_uv[ch] = noise_uv;
+        noise_sum_uv += noise_uv;
+        noise_cnt++;
+    }
+
+    double noise_value = (noise_cnt > 0) ? (noise_sum_uv / (double)noise_cnt) : 0.0;
+    char values[1024] = "[";
+    for (int ch = 0; ch < use_ch; ch++) {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), ch == use_ch - 1 ? "%.6f" : "%.6f,", per_ch_noise_uv[ch]);
+        strncat(values, tmp, sizeof(values) - strlen(values) - 1);
+    }
+    strncat(values, "]", sizeof(values) - strlen(values) - 1);
+
+    char data[1400];
+    snprintf(data, sizeof(data),
+             "{\"csv\":\"%s\",\"row_cnt\":%d,\"window_rows\":%d,\"non_zero_ch\":%d,\"used_ch\":%d,\"noise_value\":%.6f,\"values\":%s}",
+             csv_name, row_cnt_total, row_cnt, n_non_zero, use_ch, noise_value, values);
+    s_reply_ok(c, data);
+}
+
 /** GET /api/serial/list（列出可用串口，简单实现）*/
 static void s_handle_serial_list(struct mg_connection *c,
                                   struct mg_http_message *hm) {
@@ -574,6 +899,10 @@ static void s_mongoose_handler(struct mg_connection *c,
             s_handle_get_version(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/read_reg")) {
             s_handle_read_reg(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/csv/led_metrics")) {
+            s_handle_csv_led_metrics(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/csv/noise_metric")) {
+            s_handle_csv_noise_metric(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/protocol")) {
             s_handle_protocol(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/data")) {

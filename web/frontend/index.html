@@ -233,40 +233,71 @@
       grid-row: 1 / 3;
     }
 
-    /* 实时数值卡片 */
-    .metrics-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-      gap: 1rem;
+    /* LED 监测面板 */
+    .led-panel-head {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+      color: var(--text-secondary);
+      font-size: 0.76rem;
+      font-family: 'JetBrains Mono', monospace;
     }
-    .metric-card {
+    .led-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 0.7rem;
+    }
+    .led-section {
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px dashed rgba(99,102,241,0.2);
+    }
+    .led-section-title {
+      font-size: 0.74rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.45rem;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .led-card {
       background: var(--bg-card2);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 1rem;
-      position: relative;
-      overflow: hidden;
-      transition: transform 0.2s;
+      border-radius: 10px;
+      padding: 0.7rem;
+      min-height: 78px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
     }
-    .metric-card:hover { transform: translateY(-2px); }
-    .metric-card::before {
-      content: '';
-      position: absolute; top: 0; left: 0; right: 0;
-      height: 2px;
-      background: linear-gradient(90deg, var(--primary), transparent);
+    .led-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      color: var(--text-secondary);
     }
-    .metric-label {
-      font-size: 0.7rem; font-weight: 500;
-      color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: 0.05em;
-      margin-bottom: 0.3rem;
+    .led-color {
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
-    .metric-value {
+    .led-status {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.25);
+      background: #ef4444;
+      box-shadow: 0 0 8px rgba(239,68,68,0.55);
+    }
+    .led-status.ok {
+      background: #22c55e;
+      box-shadow: 0 0 8px rgba(34,197,94,0.55);
+    }
+    .led-value {
       font-family: 'JetBrains Mono', monospace;
-      font-size: 1.6rem; font-weight: 600;
+      font-size: 1.05rem;
       color: var(--text-primary);
+      margin-top: 0.45rem;
     }
-    .metric-unit { font-size: 0.65rem; color: var(--text-muted); margin-left: 2px; }
 
     /* 实时波形区域 */
     .chart-area {
@@ -573,23 +604,35 @@
   <!-- 右侧数据面板 -->
   <section class="right-panel">
 
-    <!-- 实时指标 -->
-    <div class="metrics-grid">
-      <div class="metric-card">
-        <div class="metric-label">心率</div>
-        <div class="metric-value" id="metricHR">--<span class="metric-unit">BPM</span></div>
+    <!-- LPCTR/LPLCTR LED 结果 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">💡</div>
+        <span class="card-title">LPCTR / LPLCTR LED 结果</span>
       </div>
-      <div class="metric-card">
-        <div class="metric-label">血氧SpO₂</div>
-        <div class="metric-value" id="metricSPO2">--<span class="metric-unit">%</span></div>
+      <div class="led-panel-head">
+        <span>阈值设置</span>
+        <label>LPCTR</label><input id="thLPCTR" class="reg-input" style="width:72px;" value="100" />
+        <label>LPLCTR</label><input id="thLPLCTR" class="reg-input" style="width:72px;" value="100" />
+        <label>BaseNoise</label><input id="thBaseNoise" class="reg-input" style="width:72px;" value="10" />
+        <label>PPGNoise</label><input id="thPPGNoise" class="reg-input" style="width:72px;" value="10" />
       </div>
-      <div class="metric-card">
-        <div class="metric-label">帧数</div>
-        <div class="metric-value" id="metricFrames">0</div>
+      <div class="led-section">
+        <div class="led-section-title" id="lpctrTitle">LPCTR</div>
+        <div class="led-grid" id="lpctrGrid"></div>
       </div>
-      <div class="metric-card">
-        <div class="metric-label">功能ID</div>
-        <div class="metric-value" id="metricFuncID">--</div>
+      <div class="led-section">
+        <div class="led-section-title" id="lplctrTitle">LPLCTR</div>
+        <div class="led-grid" id="lplctrGrid"></div>
+      </div>
+      <div class="led-section">
+        <div class="led-section-title">Noise 结果</div>
+        <div class="led-section-title" id="baseNoiseTitle">Base_Noise</div>
+        <div class="led-grid" id="baseNoiseGrid"></div>
+      </div>
+      <div class="led-section">
+        <div class="led-section-title" id="ppgNoiseTitle">PPG_Noise</div>
+        <div class="led-grid" id="ppgNoiseGrid"></div>
       </div>
     </div>
 
@@ -614,7 +657,9 @@
         <span class="card-title">寄存器配置下发</span>
         <div style="flex:1"></div>
         <input type="file" id="configFileImport" style="display:none" onchange="importConfigFile(event)">
+        <input type="file" id="configDirImport" style="display:none" webkitdirectory directory multiple onchange="importConfigDirectory(event)">
         <button class="btn btn-outline btn-sm" onclick="document.getElementById('configFileImport').click()">📁 导入配置</button>
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('configDirImport').click()" style="margin-left:4px">🤖 批量自动测试</button>
         <button class="btn btn-outline btn-sm" onclick="addRegRow()" style="margin-left:4px">+ 添加</button>
         <button class="btn btn-outline btn-sm" onclick="clearRegTable()" style="margin-left:4px">清空</button>
         <button class="btn btn-primary btn-sm" onclick="sendConfig()" style="margin-left:4px">发送</button>
@@ -710,6 +755,15 @@ let waveLastRenderTs = 0;
 let waveViewMin = null;
 let waveViewMax = null;
 let waveSampleCounter = 0;
+let autoTestState = null;  /* 批量自动测试状态 */
+const ledProfileState = {
+  LPCTR: { colors: [], values: [] },
+  LPLCTR: { colors: [], values: [] }
+};
+const noiseState = {
+  BASE_NOISE: { values: [] },
+  PPG_NOISE: { values: [] }
+};
 
 /* ============================================================
  * WebSocket 连接（自动重连，连后端的模拟器或真实设备）
@@ -805,15 +859,6 @@ async function syncDeviceStatus() {
 function handleFrame(frame) {
   frameCount++;
   waveSampleCounter++;
-  document.getElementById('metricFrames').textContent = frameCount;
-  document.getElementById('metricFuncID').textContent =
-    frame.func_id !== undefined ? frame.func_id : '--';
-
-  /* 更新心率 */
-  if (frame.hr !== undefined && frame.hr > 0) {
-    document.getElementById('metricHR').innerHTML =
-      frame.hr + '<span class="metric-unit">BPM</span>';
-  }
 
   /* 更新多通道波形缓冲 */
   const raw = frame.raw || [];
@@ -824,6 +869,17 @@ function handleFrame(frame) {
   }
   waveData = waveChannels[activeChannel].slice();  /* 当前显示通道 */
   waveDirty = true;
+
+  if (autoTestState && autoTestState.collecting) {
+    autoTestState.collected++;
+    if (autoTestState.collected % 50 === 0 || autoTestState.collected === autoTestState.target) {
+      addLog(`[AUTO] ${autoTestState.name}: ${autoTestState.collected}/${autoTestState.target}`, 'info');
+    }
+    if (autoTestState.collected >= autoTestState.target && !autoTestState.done) {
+      autoTestState.done = true;
+      if (typeof autoTestState.resolve === 'function') autoTestState.resolve();
+    }
+  }
 }
 
 /* ============================================================
@@ -1097,7 +1153,6 @@ function clearWave() {
   frameCount = 0;
   const statsEl = document.getElementById('waveStatsText');
   if (statsEl) statsEl.textContent = '最大值: -  最小值: -  平均值: -  差值: -';
-  document.getElementById('metricFrames').textContent = '0';
   waveDirty = true;
   drawWaveform();
 }
@@ -1259,12 +1314,309 @@ async function loadSerialList() {
   }
 }
 
+function parseLedListFromConfigText(text) {
+  const m = String(text || '').match(/"led"\s*:\s*\[([\s\S]*?)\]/m);
+  if (!m) return [];
+  const arr = [];
+  const r = /"([^"]+)"/g;
+  let x;
+  while ((x = r.exec(m[1])) !== null) arr.push(String(x[1]).toLowerCase());
+  return arr;
+}
+
+function getThresholdByProfile(profile) {
+  const idMap = {
+    LPCTR: 'thLPCTR',
+    LPLCTR: 'thLPLCTR',
+    BASE_NOISE: 'thBaseNoise',
+    PPG_NOISE: 'thPPGNoise'
+  };
+  const v = parseFloat(document.getElementById(idMap[profile])?.value || '0');
+  return Number.isFinite(v) ? v : 0;
+}
+
+function renderLedSection(profile, gridId, titleId) {
+  const p = ledProfileState[profile] || { colors: [], values: [] };
+  const colors = p.colors || [];
+  const values = p.values || [];
+  const threshold = getThresholdByProfile(profile);
+  const grid = document.getElementById(gridId);
+  const title = document.getElementById(titleId);
+  if (!grid || !title) return;
+  title.textContent = `${profile} (阈值>${threshold})`;
+  grid.innerHTML = '';
+
+  const n = Math.max(colors.length, values.length);
+  if (n === 0) {
+    grid.innerHTML = `<div class="led-card"><div class="led-top"><span class="led-color">N/A</span><span class="led-status"></span></div><div class="led-value">--</div></div>`;
+    return;
+  }
+
+  for (let i = 0; i < n; i++) {
+    const color = (colors[i] || 'unknown').toUpperCase();
+    const value = Number(values[i]);
+    const valid = Number.isFinite(value);
+    const ok = valid && value > threshold;
+    const card = document.createElement('div');
+    card.className = 'led-card';
+    card.innerHTML = `
+      <div class="led-top">
+        <span class="led-color">LED${i + 1} ${color}</span>
+        <span class="led-status ${ok ? 'ok' : ''}"></span>
+      </div>
+      <div class="led-value">${valid ? value.toFixed(3) : '--'}</div>
+    `;
+    grid.appendChild(card);
+  }
+}
+
+function renderLedPanelAll() {
+  renderLedSection('LPCTR', 'lpctrGrid', 'lpctrTitle');
+  renderLedSection('LPLCTR', 'lplctrGrid', 'lplctrTitle');
+  renderNoiseSection();
+}
+
+function renderNoiseSection() {
+  const baseGrid = document.getElementById('baseNoiseGrid');
+  const ppgGrid = document.getElementById('ppgNoiseGrid');
+  const baseTitle = document.getElementById('baseNoiseTitle');
+  const ppgTitle = document.getElementById('ppgNoiseTitle');
+  if (!baseGrid || !ppgGrid || !baseTitle || !ppgTitle) return;
+
+  baseTitle.textContent = `Base_Noise (阈值<=${getThresholdByProfile('BASE_NOISE')} 为绿色)`;
+  ppgTitle.textContent = `PPG_Noise (阈值<=${getThresholdByProfile('PPG_NOISE')} 为绿色)`;
+
+  const items = [
+    { key: 'BASE_NOISE', label: 'Base_Noise', values: (noiseState.BASE_NOISE?.values || []), grid: baseGrid },
+    { key: 'PPG_NOISE', label: 'PPG_Noise', values: (noiseState.PPG_NOISE?.values || []), grid: ppgGrid }
+  ];
+
+  for (const it of items) {
+    const grid = it.grid;
+    grid.innerHTML = '';
+    const threshold = getThresholdByProfile(it.key);
+    const values = Array.isArray(it.values) ? it.values : [];
+    if (!values.length) {
+      const card = document.createElement('div');
+      card.className = 'led-card';
+      card.innerHTML = `
+        <div class="led-top">
+          <span class="led-color">${it.label} N/A</span>
+          <span class="led-status"></span>
+        </div>
+        <div class="led-value">--</div>
+      `;
+      grid.appendChild(card);
+      continue;
+    }
+    for (let i = 0; i < values.length; i++) {
+      const v = Number(values[i]);
+      const valid = Number.isFinite(v);
+      /* Noise 指标：超阈值=红灯，低于/等于阈值=绿灯 */
+      const ok = valid && v <= threshold;
+      const card = document.createElement('div');
+      card.className = 'led-card';
+      card.innerHTML = `
+        <div class="led-top">
+          <span class="led-color">${it.label} CH${i}</span>
+          <span class="led-status ${ok ? 'ok' : ''}"></span>
+        </div>
+        <div class="led-value">${valid ? v.toFixed(3) : '--'}</div>
+      `;
+      grid.appendChild(card);
+    }
+  }
+}
+
+async function fetchLedMetricsFromCsv(csvName) {
+  const r = await apiPost('/csv/led_metrics', { csv_name: csvName });
+  if (!r || r.code !== 0 || !r.data || !Array.isArray(r.data.values)) return null;
+  return r.data;
+}
+
+async function fetchNoiseMetricFromCsv(csvName) {
+  const r = await apiPost('/csv/noise_metric', { csv_name: csvName });
+  if (!r || r.code !== 0 || !r.data || !Array.isArray(r.data.values)) return null;
+  return r.data;
+}
+
 /* ============================================================
  * 寄存器配置下发
  * ============================================================ */
 /* ============================================================
  * 导入并解析配置文件
  * ============================================================ */
+function sClip(s, n = 120) {
+  const t = String(s || '');
+  return t.length > n ? (t.slice(0, n) + `...(len=${t.length})`) : t;
+}
+
+function parseNumToken(tok) {
+  if (!tok) return null;
+  let t = String(tok).trim();
+  t = t.replace(/^["']|["']$/g, '');
+  t = t.replace(/[{}]/g, '');
+  t = t.replace(/[uUlL]+$/g, '');
+  if (!t) return null;
+  if (/^[0-9a-fA-F]+[hH]$/.test(t)) return parseInt(t.slice(0, -1), 16);
+  if (/^0[xX][0-9a-fA-F]+$/.test(t)) return parseInt(t, 16);
+  if (/^[0-9a-fA-F]+$/.test(t) && /[a-fA-F]/.test(t)) return parseInt(t, 16);
+  if (/^\d+$/.test(t)) return parseInt(t, 10);
+  return null;
+}
+
+function parseRegsFromText(textRaw, verbose = true, tag = 'CFGDBG') {
+  const text = String(textRaw || '').replace(/^\uFEFF/, '');
+  const regList = [];
+  const stats = { total: 0, empty: 0, comment: 0, header: 0, fewCols: 0, noNum: 0, outOfRange: 0, ok: 0 };
+  const rejectSamples = [];
+
+  if (verbose) {
+    addLog(`[${tag}] 文本长度: raw=${String(textRaw || '').length}, normalized=${text.length}, bom_removed=${String(textRaw || '').length !== text.length}`, 'info');
+    const previewLines = text.split(/\r?\n/).slice(0, 5).map((l, i) => `L${i + 1}:${sClip(l)}`);
+    if (previewLines.length) addLog(`[${tag}] 前5行预览: ${previewLines.join(' | ')}`, 'info');
+  }
+
+  const lines = text.split(/\r?\n/);
+  if (verbose) addLog(`[${tag}] 总行数: ${lines.length}`, 'info');
+  for (const lineRaw of lines) {
+    stats.total++;
+    if (!lineRaw) continue;
+    const line = lineRaw.trim();
+    if (!line) { stats.empty++; continue; }
+    if (line.startsWith('#') || line.startsWith('//')) { stats.comment++; continue; }
+    if (/addr|address|reg|data|value/i.test(line) && !/0[xX][0-9a-fA-F]+/.test(line)) { stats.header++; continue; }
+
+    const norm = line.replace(/[，；]/g, ',').replace(/;/g, ',').replace(/\t/g, ',');
+    const parts = norm.split(',').map(s => s.trim()).filter(Boolean);
+    if (parts.length < 2) {
+      stats.fewCols++;
+      if (rejectSamples.length < 5) rejectSamples.push(`fewCols: "${sClip(line)}"`);
+      continue;
+    }
+
+    const nums = [];
+    for (const p of parts) {
+      const n = parseNumToken(p);
+      if (n !== null) nums.push(n);
+      if (nums.length >= 2) break;
+    }
+    if (nums.length < 2) {
+      stats.noNum++;
+      if (rejectSamples.length < 5) rejectSamples.push(`noNum: "${sClip(line)}"`);
+      continue;
+    }
+    const addr = nums[0], data = nums[1];
+    if (addr < 0 || addr > 0xFFFF || data < 0 || data > 0xFFFF) {
+      stats.outOfRange++;
+      if (rejectSamples.length < 5) rejectSamples.push(`range: "${sClip(line)}" -> [${addr},${data}]`);
+      continue;
+    }
+    regList.push({
+      addr: addr.toString(16).padStart(4, '0').toUpperCase(),
+      val: data.toString(16).padStart(4, '0').toUpperCase()
+    });
+    stats.ok++;
+  }
+
+  if (regList.length === 0) {
+    const regexFallback = /\{\s*["']?0[xX]?([0-9a-fA-F]{1,4})["']?\s*[,，]\s*["']?0[xX]?([0-9a-fA-F]{1,4})["']?\s*\}/g;
+    let match;
+    while ((match = regexFallback.exec(text)) !== null) {
+      regList.push({
+        addr: parseInt(match[1], 16).toString(16).padStart(4, '0').toUpperCase(),
+        val: parseInt(match[2], 16).toString(16).padStart(4, '0').toUpperCase()
+      });
+    }
+  }
+
+  if (verbose) {
+    addLog(`[${tag}] 解析统计: total=${stats.total}, ok=${stats.ok}, empty=${stats.empty}, comment=${stats.comment}, header=${stats.header}, fewCols=${stats.fewCols}, noNum=${stats.noNum}, range=${stats.outOfRange}, fallback_total=${regList.length}`, 'info');
+    if (rejectSamples.length > 0) addLog(`[${tag}] 失败样例: ${rejectSamples.join(' | ')}`, 'err');
+  }
+  return regList;
+}
+
+function fillRegTable(regList) {
+  const tbody = document.getElementById('regTableBody');
+  tbody.innerHTML = '';
+  regList.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input class="reg-input" value="0x${r.addr}" /></td>
+      <td><input class="reg-input" value="0x${r.val}" /></td>
+      <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()">✕</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function readTextFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = (err) => reject(err);
+    reader.readAsText(file);
+  });
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+async function sendConfigRegs(regs) {
+  if (!Array.isArray(regs) || regs.length === 0) return { code: -1, msg: 'empty_regs' };
+  const payload = regs.map(r => ({
+    addr: parseInt(r.addr, 16),
+    data: parseInt(r.val, 16)
+  })).filter(x => !isNaN(x.addr) && !isNaN(x.data));
+  if (!payload.length) return { code: -2, msg: 'invalid_regs' };
+  return await apiPost('/device/config', { regs: payload });
+}
+
+async function waitForAutoSamples(target = 200, timeoutMs = 45000, cfgName = '') {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (autoTestState) autoTestState.collecting = false;
+      reject(new Error(`采样超时: ${cfgName} ${target}条`));
+    }, timeoutMs);
+    autoTestState = {
+      collecting: true,
+      target,
+      collected: 0,
+      name: cfgName,
+      done: false,
+      resolve: () => {
+        clearTimeout(timer);
+        resolve();
+      }
+    };
+  });
+}
+
+function pickBatchConfigFiles(files) {
+  const all = Array.from(files || []).filter(isValidBatchFile);
+  const byPrefix = (prefix) => all.find(f => f && f.name && f.name.toUpperCase().startsWith(prefix));
+  return [
+    byPrefix('BASE'),
+    byPrefix('LPCTR'),
+    byPrefix('PPG'),
+    byPrefix('LPLCTR')
+  ];
+}
+
+function isValidBatchFile(f) {
+  const n = (f && f.name) ? String(f.name) : '';
+  if (!n) return false;
+  const rp = (f && f.webkitRelativePath) ? String(f.webkitRelativePath) : '';
+  const lower = n.toLowerCase();
+  /* 过滤隐藏/系统文件 */
+  if (n.startsWith('.')) return false;
+  if (rp.includes('/.')) return false;
+  if (lower === 'thumbs.db' || lower === 'desktop.ini') return false;
+  return true;
+}
+
 function importConfigFile(event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -1276,116 +1628,11 @@ function importConfigFile(event) {
   const reader = new FileReader();
   reader.onload = function(e) {
     const textRaw = String(e.target.result || '');
-    /* 兼容 Windows 文本：BOM / CRLF / 引号 / 分号 / TAB / 十进制 */
-    const text = textRaw.replace(/^\uFEFF/, '');
-    const regList = [];
-    const stats = {
-      total: 0, empty: 0, comment: 0, header: 0, fewCols: 0, noNum: 0, outOfRange: 0, ok: 0
-    };
-    const rejectSamples = [];
-    const clip = (s, n = 120) => {
-      const t = String(s || '');
-      return t.length > n ? (t.slice(0, n) + `...(len=${t.length})`) : t;
-    };
-
     addLog(`[CFGDBG] 文件: ${file.name} size=${file.size} type=${file.type || 'n/a'}`, 'info');
-    addLog(`[CFGDBG] 文本长度: raw=${textRaw.length}, normalized=${text.length}, bom_removed=${textRaw.length !== text.length}`, 'info');
-    const previewLines = text.split(/\r?\n/).slice(0, 5).map((l, i) => `L${i + 1}:${clip(l)}`);
-    if (previewLines.length) addLog(`[CFGDBG] 前5行预览: ${previewLines.join(' | ')}`, 'info');
-
-    function parseNumToken(tok) {
-      if (!tok) return null;
-      let t = String(tok).trim();
-      t = t.replace(/^["']|["']$/g, '');   // 去掉首尾引号
-      t = t.replace(/[{}]/g, '');          // 去掉花括号
-      t = t.replace(/[uUlL]+$/g, '');      // 去掉 C 风格后缀
-      if (!t) return null;
-      if (/^[0-9a-fA-F]+[hH]$/.test(t)) return parseInt(t.slice(0, -1), 16);
-      if (/^0[xX][0-9a-fA-F]+$/.test(t)) return parseInt(t, 16);
-      if (/^[0-9a-fA-F]+$/.test(t) && /[a-fA-F]/.test(t)) return parseInt(t, 16);
-      if (/^\d+$/.test(t)) return parseInt(t, 10);
-      return null;
-    }
-
-    const lines = text.split(/\r?\n/);
-    addLog(`[CFGDBG] 总行数: ${lines.length}`, 'info');
-    for (const lineRaw of lines) {
-      stats.total++;
-      if (!lineRaw) continue;
-      const line = lineRaw.trim();
-      if (!line) { stats.empty++; continue; }
-
-      /* 跳过注释和标题行 */
-      if (line.startsWith('#') || line.startsWith('//')) { stats.comment++; continue; }
-      if (/addr|address|reg|data|value/i.test(line) && !/0[xX][0-9a-fA-F]+/.test(line)) { stats.header++; continue; }
-
-      const norm = line.replace(/[，；]/g, ',').replace(/;/g, ',').replace(/\t/g, ',');
-      const parts = norm.split(',').map(s => s.trim()).filter(Boolean);
-      if (parts.length < 2) {
-        stats.fewCols++;
-        if (rejectSamples.length < 5) rejectSamples.push(`fewCols: "${clip(line)}"`);
-        continue;
-      }
-
-      const nums = [];
-      for (const p of parts) {
-        const n = parseNumToken(p);
-        if (n !== null) nums.push(n);
-        if (nums.length >= 2) break;
-      }
-      if (nums.length < 2) {
-        stats.noNum++;
-        if (rejectSamples.length < 5) rejectSamples.push(`noNum: "${clip(line)}"`);
-        continue;
-      }
-      const addr = nums[0];
-      const data = nums[1];
-      if (addr === null || data === null) {
-        stats.noNum++;
-        if (rejectSamples.length < 5) rejectSamples.push(`nullNum: "${clip(line)}"`);
-        continue;
-      }
-      if (addr < 0 || addr > 0xFFFF || data < 0 || data > 0xFFFF) {
-        stats.outOfRange++;
-        if (rejectSamples.length < 5) rejectSamples.push(`range: "${clip(line)}" -> [${addr},${data}]`);
-        continue;
-      }
-
-      regList.push({
-        addr: addr.toString(16).padStart(4, '0').toUpperCase(),
-        val: data.toString(16).padStart(4, '0').toUpperCase()
-      });
-      stats.ok++;
-    }
-
-    /* 文本里可能是一行一个 "{0xADDR,0xVAL}"，再做一次全局兜底 */
-    if (regList.length === 0) {
-      const regexFallback = /\{\s*["']?0[xX]?([0-9a-fA-F]{1,4})["']?\s*[,，]\s*["']?0[xX]?([0-9a-fA-F]{1,4})["']?\s*\}/g;
-      let match;
-      while ((match = regexFallback.exec(text)) !== null) {
-        regList.push({
-          addr: parseInt(match[1], 16).toString(16).padStart(4, '0').toUpperCase(),
-          val: parseInt(match[2], 16).toString(16).padStart(4, '0').toUpperCase()
-        });
-      }
-    }
-    addLog(`[CFGDBG] 解析统计: total=${stats.total}, ok=${stats.ok}, empty=${stats.empty}, comment=${stats.comment}, header=${stats.header}, fewCols=${stats.fewCols}, noNum=${stats.noNum}, range=${stats.outOfRange}, fallback_total=${regList.length}`, 'info');
-    if (rejectSamples.length > 0) {
-      addLog(`[CFGDBG] 失败样例: ${rejectSamples.join(' | ')}`, 'err');
-    }
+    const regList = parseRegsFromText(textRaw, true, 'CFGDBG');
 
     if (regList.length > 0) {
-      const tbody = document.getElementById('regTableBody');
-      tbody.innerHTML = '';
-      regList.forEach(r => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td><input class="reg-input" value="0x${r.addr}" /></td>
-          <td><input class="reg-input" value="0x${r.val}" /></td>
-          <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()">✕</button></td>
-        `;
-        tbody.appendChild(tr);
-      });
+      fillRegTable(regList);
       addLog(`[INFO] 成功解析并导入 ${regList.length} 条寄存器配置`, 'info');
       const show = regList.slice(0, 5).map(r => `{0x${r.addr},0x${r.val}}`).join(' ');
       addLog(`[CFGDBG] 前5条解析结果: ${show}`, 'info');
@@ -1399,6 +1646,152 @@ function importConfigFile(event) {
     addLog(`[ERR] 文件读取失败: ${err?.target?.error?.message || 'unknown'}`, 'err');
   };
   reader.readAsText(file);
+}
+
+async function importConfigDirectory(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) {
+    addLog('[ERR] 未选择目录或目录为空', 'err');
+    return;
+  }
+  const validFiles = files.filter(isValidBatchFile);
+  if (!isConnected) {
+    addLog('[ERR] 请先连接设备，再执行批量自动测试', 'err');
+    event.target.value = '';
+    return;
+  }
+  if (isSampling) {
+    addLog('[ERR] 当前正在采样，请先停止后再批量测试', 'err');
+    event.target.value = '';
+    return;
+  }
+  const picked = pickBatchConfigFiles(validFiles);
+  const names = ['BASE*', 'LPCTR*', 'PPG*', 'LPLCTR*'];
+  for (let i = 0; i < picked.length; i++) {
+    if (!picked[i]) {
+      addLog(`[ERR] 目录中缺少配置文件: ${names[i]}`, 'err');
+      event.target.value = '';
+      return;
+    }
+  }
+
+  addLog(`[AUTO] 目录已选，原始${files.length}个文件，过滤后${validFiles.length}个有效文件，匹配到4个目标配置`, 'info');
+  const funcMask = getSelectedFuncMask();
+  if (!funcMask) {
+    addLog('[ERR] 请勾选 Test1(0x40)', 'err');
+    event.target.value = '';
+    return;
+  }
+  currentFuncMask = funcMask;
+
+  try {
+    for (let i = 0; i < picked.length; i++) {
+      const file = picked[i];
+      const isLast = (i === picked.length - 1);
+      if (isLast) {
+        const ok = window.confirm('请先更换测试环境，完成后点击“确定”继续最后一项自动测试（LPLCTR*）。');
+        if (!ok) {
+          addLog('[AUTO] 用户取消了最后一项测试', 'info');
+          break;
+        }
+      }
+
+      const cfgName = file.name.replace(/\.[^.]+$/, '');
+      currentConfigName = cfgName;
+      const label = document.getElementById('csvNameLabel');
+      if (label) label.textContent = `CSV: ${currentConfigName}.csv`;
+
+      addLog(`[AUTO] 开始配置: ${file.name}`, 'info');
+      const text = await readTextFile(file);
+      const regs = parseRegsFromText(text, false, 'AUTO');
+      const ledList = parseLedListFromConfigText(text);
+      const upName = cfgName.toUpperCase();
+      if (ledList.length > 0) {
+        if (upName.startsWith('LPCTR')) ledProfileState.LPCTR.colors = ledList;
+        if (upName.startsWith('LPLCTR')) ledProfileState.LPLCTR.colors = ledList;
+      }
+      if (!regs.length) {
+        addLog(`[ERR] ${file.name} 解析失败：无有效寄存器`, 'err');
+        break;
+      }
+      fillRegTable(regs);
+      const cfgResp = await sendConfigRegs(regs);
+      if (!cfgResp || cfgResp.code !== 0) {
+        addLog(`[ERR] ${file.name} 配置下发失败: ${cfgResp?.msg || '超时'}`, 'err');
+        break;
+      }
+      addLog(`[AUTO] ${file.name} 配置下发成功，寄存器${regs.length}条`, 'recv');
+
+      await sleep(300);
+      const startResp = await apiPost('/device/start', {
+        ctrl: 0, mode: 0, func_mask: currentFuncMask, config_name: currentConfigName
+      });
+      if (!startResp || startResp.code !== 0) {
+        addLog(`[ERR] ${file.name} 启动采样失败: ${startResp?.msg || '超时'}`, 'err');
+        break;
+      }
+      isSampling = true;
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('stopBtn').disabled  = false;
+      document.getElementById('statusBadge').className = 'status-badge sampling';
+      document.getElementById('statusLabel').textContent = '采集中';
+
+      clearWave();
+      addLog(`[AUTO] ${file.name} 开始采样，目标200条`, 'info');
+      await waitForAutoSamples(200, 45000, cfgName);
+
+      const stopResp = await apiPost('/device/start', { ctrl: 1, mode: 0, func_mask: currentFuncMask });
+      if (!stopResp || stopResp.code !== 0) {
+        addLog(`[ERR] ${file.name} 停止采样失败: ${stopResp?.msg || '超时'}`, 'err');
+        break;
+      }
+      isSampling = false;
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('stopBtn').disabled  = true;
+      document.getElementById('statusBadge').className = 'status-badge connected';
+      document.getElementById('statusLabel').textContent = '已连接';
+      addLog(`[AUTO] ${file.name} 采样完成(200条)，CSV=${cfgName}.csv`, 'recv');
+
+      if (upName.startsWith('LPCTR') || upName.startsWith('LPLCTR')) {
+        const prof = upName.startsWith('LPLCTR') ? 'LPLCTR' : 'LPCTR';
+        const m = await fetchLedMetricsFromCsv(`${cfgName}.csv`);
+        if (m && Array.isArray(m.values)) {
+          ledProfileState[prof].values = m.values;
+          renderLedPanelAll();
+          addLog(`[AUTO] ${prof} LED结果已更新: ${m.values.length}路`, 'recv');
+        } else {
+          addLog(`[ERR] ${prof} CSV解析失败: ${cfgName}.csv`, 'err');
+        }
+      }
+      if (upName.startsWith('BASE')) {
+        const nm = await fetchNoiseMetricFromCsv(`${cfgName}.csv`);
+        if (nm && Array.isArray(nm.values)) {
+          noiseState.BASE_NOISE = { values: nm.values };
+          renderLedPanelAll();
+          addLog(`[AUTO] Base_Noise 结果已更新: ${nm.values.length}路`, 'recv');
+        } else {
+          addLog(`[ERR] Base_Noise CSV解析失败: ${cfgName}.csv`, 'err');
+        }
+      }
+      if (upName.startsWith('PPG')) {
+        const nm = await fetchNoiseMetricFromCsv(`${cfgName}.csv`);
+        if (nm && Array.isArray(nm.values)) {
+          noiseState.PPG_NOISE = { values: nm.values };
+          renderLedPanelAll();
+          addLog(`[AUTO] PPG_Noise 结果已更新: ${nm.values.length}路`, 'recv');
+        } else {
+          addLog(`[ERR] PPG_Noise CSV解析失败: ${cfgName}.csv`, 'err');
+        }
+      }
+      await sleep(500);
+    }
+  } catch (err) {
+    addLog(`[ERR] 批量自动测试中断: ${err?.message || err}`, 'err');
+  } finally {
+    autoTestState = null;
+    event.target.value = '';
+    addLog('[AUTO] 批量流程结束', 'info');
+  }
 }
 
 function clearRegTable() {
@@ -1513,6 +1906,10 @@ async function checkBackend() {
 window.addEventListener('DOMContentLoaded', () => {
   drawWaveform();
   scheduleWaveRender();
+  renderLedPanelAll();
+  ['thLPCTR', 'thLPLCTR', 'thBaseNoise', 'thPPGNoise'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', () => renderLedPanelAll());
+  });
 
   addLog('[INFO] GH Protocol UI 已加载', 'info');
   addLog(`[INFO] 后端地址: http://${BACKEND_HOST}:${BACKEND_PORT}`, 'info');
