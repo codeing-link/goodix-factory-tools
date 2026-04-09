@@ -75,6 +75,10 @@ typedef struct {
     gh_device_state_t device_state; /* 当前设备状态 */
     bool              use_chelsea_a_parser; /* 区分采用 Cardiff 还是 Chelsea 解包 */
     uint8_t           rpc_com_id;           /* Cardiff RPC sall 通信ID计数器 */
+    bool              has_last_frame_cnt;   /* 帧连续性统计: 是否已有上一帧 */
+    uint32_t          last_frame_cnt;       /* 帧连续性统计: 上一帧 frame_id */
+    uint32_t          frame_gap_events;     /* 帧连续性统计: 跳变事件次数 */
+    uint32_t          frame_gap_total;      /* 帧连续性统计: 总丢帧数 */
 
     /* CSV 数据保存 */
     FILE             *csv_fp;            /* CSV 文件句柄，NULL 表示未打开 */
@@ -119,6 +123,18 @@ void gh_service_init(gh_service_t* svc,
 bool gh_service_connect_serial(gh_service_t* svc, const char* port);
 
 /**
+ * @brief 通过 AT 透传蓝牙模块连接被测设备
+ * @param svc        服务层上下文
+ * @param at_port    AT 模块串口（如 COM28 /dev/tty.usbserial-xxx）
+ * @param slave_name 蓝牙从机名（默认 ChelseaA_OS）
+ * @return true=连接成功并进入透传
+ */
+bool gh_service_connect_ble_at(gh_service_t* svc, const char* at_port, const char* slave_name);
+bool gh_service_connect_ble_at_with_mac(gh_service_t* svc, const char* at_port, const char* slave_name, const char* mac);
+bool gh_service_connect_ble_at_fast(gh_service_t* svc, const char* at_port, const char* slave_name, const char* mac);
+bool gh_service_scan_ble_at(gh_service_t* svc, const char* at_port, const char* slave_name, char* out_mac, size_t out_mac_sz);
+
+/**
  * @brief 断开连接（对应原 serial->close()）
  * @param svc  服务层上下文
  */
@@ -130,6 +146,11 @@ void gh_service_disconnect(gh_service_t* svc);
  * @return true=已连接
  */
 bool gh_service_is_connected(const gh_service_t* svc);
+
+/**
+ * @brief 获取 BLE 连接的从机 MAC（仅 BLE 模式有效）
+ */
+const char* gh_service_get_ble_mac(const gh_service_t* svc);
 
 /**
  * @brief 发送 StartHBD 命令（开始/停止采样）

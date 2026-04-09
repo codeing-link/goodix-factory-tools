@@ -261,14 +261,23 @@ static void s_handle_status(struct mg_connection *c,
         }
     }
     char data[256];
+    const char *conn_type = "serial";
+    const char *ble_name = "";
+    const char *ble_mac = "";
+    if (api->service && api->service->transport.ble_at_mode) {
+        conn_type = "ble_at";
+        ble_name = api->service->transport.ble_slave_name;
+        ble_mac = gh_service_get_ble_mac(api->service);
+    }
     snprintf(data, sizeof(data),
              "{\"state\":\"%s\",\"port\":\"%s\",\"baud_rate\":%d,"
-             "\"sim_mode\":%s}",
+             "\"sim_mode\":%s,\"conn_type\":\"%s\",\"ble_slave_name\":\"%s\",\"ble_mac\":\"%s\"}",
              state_str,
              api->service ? api->service->serial_cfg.port : "none",
              api->service ? api->service->serial_cfg.baud_rate : 0,
              (api->service == NULL || !gh_service_is_connected(api->service))
-                 ? "true" : "false");
+                 ? "true" : "false",
+             conn_type, ble_name, ble_mac);
     s_reply_ok(c, data);
 }
 
@@ -314,6 +323,70 @@ static void s_handle_connect(struct mg_connection *c,
         s_reply_ok(c, "{\"state\":\"connected\"}");
     } else {
         s_reply_err(c, -3, "Failed to open serial port");
+    }
+}
+
+/** POST /api/device/connect_ble
+ *  Body: {"port":"COM28","slave_name":"ChelseaA_OS"}
+ */
+static void s_handle_connect_ble(struct mg_connection *c,
+                                 struct mg_http_message *hm,
+                                 gh_api_t *api) {
+    if (!api->service) { s_reply_err(c, -1, "No service"); return; }
+
+    char port[64] = {0};
+    char slave_name[64] = {0};
+    char mac[32] = {0};
+    s_json_str(hm->body.buf, hm->body.len, "port", port, sizeof(port));
+    s_json_str(hm->body.buf, hm->body.len, "slave_name", slave_name, sizeof(slave_name));
+    s_json_str(hm->body.buf, hm->body.len, "mac", mac, sizeof(mac));
+    if (port[0] == '\0') { s_reply_err(c, -2, "Missing port"); return; }
+    if (slave_name[0] == '\0') snprintf(slave_name, sizeof(slave_name), "ChelseaA_OS");
+
+    bool ok = false;
+    if (mac[0] != '\0') {
+        /* 扫描后连接：仅执行 CONN + EXIT，避免重复初始化 */
+        ok = gh_service_connect_ble_at_fast(api->service, port, slave_name, mac);
+    } else {
+        ok = gh_service_connect_ble_at(api->service, port, slave_name);
+    }
+    if (ok) {
+        const char *mac_cur = gh_service_get_ble_mac(api->service);
+        char data[256];
+        snprintf(data, sizeof(data),
+                 "{\"state\":\"connected\",\"conn_type\":\"ble_at\",\"ble_slave_name\":\"%s\",\"ble_mac\":\"%s\"}",
+                 slave_name, mac_cur ? mac_cur : "");
+        s_reply_ok(c, data);
+    } else {
+        s_reply_err(c, -3, "Failed to connect ble_at");
+    }
+}
+
+/** POST /api/device/ble_scan
+ *  Body: {"port":"COM28","slave_name":"ChelseaA_OS"}
+ */
+static void s_handle_ble_scan(struct mg_connection *c,
+                              struct mg_http_message *hm,
+                              gh_api_t *api) {
+    if (!api->service) { s_reply_err(c, -1, "No service"); return; }
+    if (gh_service_is_connected(api->service)) {
+        s_reply_err(c, -4, "Device already connected, disconnect first");
+        return;
+    }
+    char port[64] = {0};
+    char slave_name[64] = {0};
+    char mac[32] = {0};
+    s_json_str(hm->body.buf, hm->body.len, "port", port, sizeof(port));
+    s_json_str(hm->body.buf, hm->body.len, "slave_name", slave_name, sizeof(slave_name));
+    if (port[0] == '\0') { s_reply_err(c, -2, "Missing port"); return; }
+    if (slave_name[0] == '\0') snprintf(slave_name, sizeof(slave_name), "ChelseaA_OS");
+
+    if (gh_service_scan_ble_at(api->service, port, slave_name, mac, sizeof(mac))) {
+        char data[192];
+        snprintf(data, sizeof(data), "{\"slave_name\":\"%s\",\"ble_mac\":\"%s\"}", slave_name, mac);
+        s_reply_ok(c, data);
+    } else {
+        s_reply_err(c, -3, "Ble scan failed");
     }
 }
 
@@ -918,6 +991,10 @@ static void s_mongoose_handler(struct mg_connection *c,
             s_handle_status(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/connect")) {
             s_handle_connect(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/device/connect_ble")) {
+            s_handle_connect_ble(c, hm, api);
+        } else if (s_uri_eq(hm, "/api/device/ble_scan")) {
+            s_handle_ble_scan(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/disconnect")) {
             s_handle_disconnect(c, hm, api);
         } else if (s_uri_eq(hm, "/api/device/start")) {
@@ -1098,6 +1175,16 @@ void gh_api_push_frame(gh_api_t *api, const gh_data_frame_t *frame) {
 
 void gh_api_push_log(gh_api_t *api, const char *text, const char *dir) {
     if (!api || !text || !dir) return;
+    /* 采样期间在 BLE-AT 模式下抑制高频字节日志，优先保证数据链路稳定 */
+    if (api->service &&
+        api->service->transport.ble_at_mode &&
+        gh_service_get_state(api->service) == GH_DEV_STATE_SAMPLING) {
+        if (strncmp(text, "[RX]", 4) == 0 ||
+            strncmp(text, "[BLE-AT] <<< RAW=", 17) == 0 ||
+            strncmp(text, "[BLE-AT] <<< +BLERECV=", 21) == 0) {
+            return;
+        }
+    }
     GH_MUTEX_LOCK(&api->log_queue.lock);
     /* 队列满时覆盖最旧的 */
     if (api->log_queue.count >= GH_API_LOG_QUEUE_SIZE) {

@@ -112,6 +112,19 @@
       animation: pulse 1.5s infinite;
     }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .ble-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--danger);
+      box-shadow: 0 0 0 2px rgba(239,68,68,0.15);
+      display: inline-block;
+      margin-left: 0.35rem;
+    }
+    .ble-dot.ok {
+      background: var(--success);
+      box-shadow: 0 0 0 2px rgba(16,185,129,0.2);
+    }
 
     /* ===== 主布局 ===== */
     .main {
@@ -543,6 +556,13 @@
       </div>
 
       <div class="form-group">
+        <label class="form-label">通讯方式</label>
+        <div class="func-checkboxes">
+          <label class="func-check"><input type="radio" name="connType" id="connTypeBle" value="ble_at" checked onchange="onConnTypeChanged('ble_at')"> 蓝牙AT</label>
+          <label class="func-check"><input type="radio" name="connType" id="connTypeSerial" value="serial" onchange="onConnTypeChanged('serial')"> 物理串口</label>
+        </div>
+      </div>
+      <div class="form-group">
         <label class="form-label" for="portInput">串口设备</label>
         <input type="text" class="form-input" id="portInput"
                value="/dev/ttyUSB0" placeholder="/dev/ttyUSB0" />
@@ -555,14 +575,25 @@
           <option value="230400">230400</option>
           <option value="400000">400000</option>
           <option value="460800">460800</option>
-          <option value="921600">921600</option>
         </select>
       </div>
 
       <div class="btn-row">
-        <button class="btn btn-primary btn-full" id="connectBtn" onclick="toggleConnect()">
-          🔗 连接设备
+        <button class="btn btn-outline btn-sm" id="bleScanBtn" onclick="scanBleSlave()">
+          🔍 Scan
         </button>
+        <button class="btn btn-primary btn-full" id="connectBtn" onclick="toggleDeviceConnect()">
+          🔵 蓝牙连接
+        </button>
+      </div>
+      <div class="form-group" style="margin-top:0.5rem;">
+        <label class="form-label" for="bleSlaveName">蓝牙从机名称（扫描）</label>
+        <input type="text" class="form-input" id="bleSlaveName" value="ChelseaA_OS" placeholder="ChelseaA_OS" />
+      </div>
+      <div class="form-group" style="display:flex; align-items:center; gap:0.5rem;">
+        <label class="form-label" style="width:64px; margin-bottom:0;">从机MAC</label>
+        <input type="text" class="form-input" id="bleMacView" value="" readonly style="flex:1;" />
+        <span class="ble-dot" id="bleConnDot"></span>
       </div>
     </div>
 
@@ -657,6 +688,8 @@
       <div class="api-grid">
         <div class="api-item"><span class="api-method m-get">GET</span><span class="api-path">/api/device/status</span></div>
         <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/connect</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/ble_scan</span></div>
+        <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/connect_ble</span></div>
         <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/disconnect</span></div>
         <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/start</span></div>
         <div class="api-item"><span class="api-method m-post">POST</span><span class="api-path">/api/device/config</span></div>
@@ -817,6 +850,9 @@ let wsConnected  = false;
 let backendAlive = false;   /* 后端是否在线 */
 let isConnected  = false;   /* 设备是否已连接 */
 let isSampling   = false;
+let currentConnType = 'ble_at'; /* serial | ble_at */
+let bleScannedMac = '';
+let userConnTypeOverridden = false;
 let frameCount   = 0;
 let waveData     = [];
 let waveChannels = [[], [], [], []]; /* 多通道波形（最多4路）*/
@@ -872,7 +908,7 @@ function connectWebSocket() {
         /* 后端欢迎消息，同步状态 */
         addLog(`[WS] 后端状态: ${msg.state}`, 'info');
         if (msg.state === 'connected' || msg.state === 'sampling') {
-          setConnected(true);
+          setConnected(true, currentConnType);
         }
       } else if (msg.type === 'log') {
         /* 串口调试：原始 TX/RX 字节 */
@@ -917,15 +953,28 @@ async function syncDeviceStatus() {
   if (!r) return;
   if (r.code === 0 && r.data) {
     const s = r.data.state;
+    const connType = (r.data.conn_type === 'ble_at') ? 'ble_at' : 'serial';
     addLog(`[API] 后端设备状态: ${s}`, 'info');
-    /* 如果后端正在模拟器输出数据，也算「已连接」*/
-    if (s === 'connected' || s === 'sampling' || s === 'sim_sampling') {
-      setConnected(true);
-    }
+    /* 如果后端正在输出数据，也算「已连接」*/
+    const connected = (s === 'connected' || s === 'sampling' || s === 'sim_sampling');
+    if (connected) currentConnType = connType;
+    if (!connected && !userConnTypeOverridden) currentConnType = 'ble_at';
+    isSampling = (s === 'sampling' || s === 'sim_sampling');
+    setConnected(connected, connected ? connType : null);
     /* 更新串口输入框 */
     if (r.data.port && r.data.port !== 'none') {
       document.getElementById('portInput').value = r.data.port;
     }
+    if (typeof r.data.baud_rate === 'number' && r.data.baud_rate > 0) {
+      const baudSel = document.getElementById('baudSelect');
+      if (baudSel) baudSel.value = String(r.data.baud_rate);
+    }
+    if (r.data.ble_slave_name) {
+      const nameEl = document.getElementById('bleSlaveName');
+      if (nameEl) nameEl.value = r.data.ble_slave_name;
+    }
+    if (r.data.ble_mac) bleScannedMac = String(r.data.ble_mac);
+    updateBleStatusUi(connected && connType === 'ble_at', (r.data.ble_mac || bleScannedMac || ''));
     /* 如果是模拟器模式，显示提示 */
     if (r.data.sim_mode) {
       addLog('[INFO] 后端运行在模拟器模式（数据为合成PPG波形）', 'info');
@@ -1245,13 +1294,13 @@ function clearWave() {
 /* ============================================================
  * API 调用工具函数
  * ============================================================ */
-async function apiPost(endpoint, body) {
+async function apiPost(endpoint, body, timeoutMs = 5000) {
   try {
     const res = await fetch(API_BASE + endpoint, {
       method : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body   : JSON.stringify(body),
-      signal : AbortSignal.timeout(5000)  /* 5秒超时 */
+      signal : AbortSignal.timeout(timeoutMs)
     });
     return await res.json();
   } catch(e) {
@@ -1275,51 +1324,193 @@ async function apiGet(endpoint) {
 /* ============================================================
  * 设备连接/断开
  * ============================================================ */
-async function toggleConnect() {
-  if (!wsConnected) {
-    addLog('[ERR] 后端未连接，请先启动后端服务', 'err');
-    addLog('[INFO] 运行: cd build && ./gh_backend --sim', 'info');
+function getSelectedConnType() {
+  return document.getElementById('connTypeSerial')?.checked ? 'serial' : 'ble_at';
+}
+
+function onConnTypeChanged(type) {
+  userConnTypeOverridden = true;
+  currentConnType = (type === 'serial') ? 'serial' : 'ble_at';
+  const connTypeBle = document.getElementById('connTypeBle');
+  const connTypeSerial = document.getElementById('connTypeSerial');
+  if (connTypeBle) connTypeBle.checked = currentConnType === 'ble_at';
+  if (connTypeSerial) connTypeSerial.checked = currentConnType === 'serial';
+  setConnTypeUi();
+}
+
+function updateBleStatusUi(ok, mac) {
+  const dot = document.getElementById('bleConnDot');
+  const macEl = document.getElementById('bleMacView');
+  if (dot) dot.classList.toggle('ok', !!ok);
+  if (macEl && typeof mac === 'string') macEl.value = mac;
+}
+
+function setConnTypeUi() {
+  const selected = currentConnType;
+  const connTypeBle = document.getElementById('connTypeBle');
+  const connTypeSerial = document.getElementById('connTypeSerial');
+  if (connTypeBle) connTypeBle.checked = selected === 'ble_at';
+  if (connTypeSerial) connTypeSerial.checked = selected === 'serial';
+  const connBtn = document.getElementById('connectBtn');
+  const scanBtn = document.getElementById('bleScanBtn');
+  const bleNameInput = document.getElementById('bleSlaveName');
+  const bleNameLabel = document.querySelector('label[for="bleSlaveName"]');
+  const baudSel = document.getElementById('baudSelect');
+  const portInput = document.getElementById('portInput');
+  if (bleNameInput) bleNameInput.disabled = (selected !== 'ble_at');
+  if (bleNameLabel) bleNameLabel.style.opacity = (selected === 'ble_at') ? '1' : '0.55';
+  if (baudSel) {
+    if (selected === 'ble_at') {
+      baudSel.value = '115200';
+      baudSel.disabled = true;
+    } else {
+      baudSel.disabled = false;
+    }
+  }
+  if (portInput) {
+    portInput.placeholder = (selected === 'ble_at')
+      ? 'COM28 或 /dev/tty.usbserial-xxx'
+      : '/dev/ttyUSB0 或 COM28';
+  }
+  if (scanBtn) scanBtn.disabled = (selected !== 'ble_at') || isConnected;
+
+  if (!connBtn) return;
+  if (isConnected) {
+    connBtn.disabled = false;
+    connBtn.className = 'btn btn-danger btn-full';
+    connBtn.textContent = (currentConnType === 'ble_at') ? '🔌 断开蓝牙AT' : '🔌 断开物理串口';
     return;
   }
-  if (!isConnected) {
-    const port = document.getElementById('portInput').value.trim();
+  if (selected === 'ble_at') {
+    const canConnect = !!bleScannedMac;
+    connBtn.disabled = !canConnect;
+    connBtn.className = 'btn btn-primary btn-full';
+    connBtn.textContent = canConnect ? '🔵 蓝牙连接' : '🔵 蓝牙连接（请先Scan）';
+  } else {
+    connBtn.disabled = false;
+    connBtn.className = 'btn btn-primary btn-full';
+    connBtn.textContent = '🔗 物理串口连接';
+  }
+}
+
+async function scanBleSlave() {
+  if (!wsConnected) {
+    addLog('[ERR] 后端未连接，请先启动后端服务', 'err');
+    return;
+  }
+  if (isConnected) {
+    addLog('[ERR] 设备已连接，扫描前请先断开', 'err');
+    return;
+  }
+  if (getSelectedConnType() !== 'ble_at') return;
+
+  const port = document.getElementById('portInput').value.trim();
+  const slaveName = (document.getElementById('bleSlaveName').value || '').trim() || 'ChelseaA_OS';
+  if (!port) {
+    addLog('[ERR] 请输入 AT 模块串口号（例如 COM28）', 'err');
+    return;
+  }
+  addLog(`[SEND] POST /api/device/ble_scan {"port":"${port}","slave_name":"${slaveName}"}`, 'send');
+  const r = await apiPost('/device/ble_scan', { port, slave_name: slaveName }, 30000);
+  if (r && r.code === 0 && r.data?.ble_mac) {
+    bleScannedMac = String(r.data.ble_mac);
+    updateBleStatusUi(false, bleScannedMac);
+    addLog(`[RECV] 扫描成功: ${slaveName} -> ${bleScannedMac}`, 'recv');
+    setConnTypeUi();
+  } else {
+    bleScannedMac = '';
+    updateBleStatusUi(false, '');
+    addLog('[ERR] 扫描失败: ' + (r?.msg ?? '超时'), 'err');
+    setConnTypeUi();
+  }
+}
+
+async function toggleDeviceConnect() {
+  if (!wsConnected) {
+    addLog('[ERR] 后端未连接，请先启动后端服务', 'err');
+    return;
+  }
+  const selected = getSelectedConnType();
+  if (isConnected) {
+    await apiPost('/device/disconnect', {});
+    if (currentConnType === 'ble_at') updateBleStatusUi(false, bleScannedMac || '');
+    else updateBleStatusUi(false, '');
+    setConnected(false, currentConnType);
+    addLog('[INFO] 已断开', 'info');
+    return;
+  }
+
+  const port = document.getElementById('portInput').value.trim();
+  if (!port) {
+    addLog('[ERR] 请输入串口号', 'err');
+    return;
+  }
+
+  if (selected === 'serial') {
     const baud = parseInt(document.getElementById('baudSelect').value);
     addLog(`[SEND] POST /api/device/connect {"port":"${port}","baud_rate":${baud}}`, 'send');
     const r = await apiPost('/device/connect', { port, baud_rate: baud });
     if (r && r.code === 0) {
-      setConnected(true);
-      addLog('[RECV] 设备连接成功', 'recv');
+      setConnected(true, 'serial');
+      updateBleStatusUi(false, '');
+      addLog('[RECV] 物理串口连接成功', 'recv');
     } else {
-      addLog('[ERR] 连接失败: ' + (r?.msg ?? '超时'), 'err');
+      setConnected(false, 'serial');
+      addLog('[ERR] 物理串口连接失败: ' + (r?.msg ?? '超时'), 'err');
     }
+    return;
+  }
+
+  const slaveName = (document.getElementById('bleSlaveName').value || '').trim() || 'ChelseaA_OS';
+  if (!bleScannedMac) {
+    addLog('[ERR] 请先执行 Scan，获取从机 MAC 后再连接', 'err');
+    return;
+  }
+  addLog(`[SEND] POST /api/device/connect_ble {"port":"${port}","slave_name":"${slaveName}","mac":"${bleScannedMac}"}`, 'send');
+  const r = await apiPost('/device/connect_ble', { port, slave_name: slaveName, mac: bleScannedMac }, 30000);
+  if (r && r.code === 0) {
+    const mac = r?.data?.ble_mac || bleScannedMac;
+    bleScannedMac = mac;
+    setConnected(true, 'ble_at');
+    updateBleStatusUi(true, mac);
+    addLog(`[RECV] 蓝牙连接成功, MAC=${mac}`, 'recv');
   } else {
-    await apiPost('/device/disconnect', {});
-    setConnected(false);
-    addLog('[INFO] 已断开', 'info');
+    setConnected(false, 'ble_at');
+    updateBleStatusUi(false, bleScannedMac || '');
+    addLog('[ERR] 蓝牙连接失败: ' + (r?.msg ?? '超时'), 'err');
   }
 }
 
-function setConnected(connected) {
+function setConnected(connected, connType = null) {
   isConnected = connected;
+  if (connType) currentConnType = connType;
   const badge    = document.getElementById('statusBadge');
   const label    = document.getElementById('statusLabel');
-  const btn      = document.getElementById('connectBtn');
+  const connBtn = document.getElementById('connectBtn');
+  const scanBtn = document.getElementById('bleScanBtn');
+  const connTypeBle = document.getElementById('connTypeBle');
+  const connTypeSerial = document.getElementById('connTypeSerial');
   const startBtn = document.getElementById('startBtn');
+  if (connTypeBle) connTypeBle.checked = currentConnType === 'ble_at';
+  if (connTypeSerial) connTypeSerial.checked = currentConnType === 'serial';
   if (connected) {
-    badge.className = 'status-badge connected';
-    label.textContent = '已连接';
-    btn.textContent  = '🔌 断开连接';
-    btn.className    = 'btn btn-danger btn-full';
-    startBtn.disabled = false;
+    badge.className = isSampling ? 'status-badge sampling' : 'status-badge connected';
+    label.textContent = isSampling ? '采集中' : '已连接';
+    if (scanBtn) scanBtn.disabled = true;
+    if (connBtn) {
+      connBtn.disabled = false;
+      connBtn.className = 'btn btn-danger btn-full';
+      connBtn.textContent = currentConnType === 'ble_at' ? '🔌 断开蓝牙AT' : '🔌 断开物理串口';
+    }
+    startBtn.disabled = isSampling ? true : false;
   } else {
     badge.className = 'status-badge';
     label.textContent = '未连接';
-    btn.textContent  = '🔗 连接设备';
-    btn.className    = 'btn btn-primary btn-full';
     startBtn.disabled = true;
     document.getElementById('stopBtn').disabled = true;
     isSampling = false;
   }
+  setConnTypeUi();
   applyWorkModeUi();
 }
 
@@ -1650,8 +1841,12 @@ function parseRegsFromText(textRaw, verbose = true, tag = 'CFGDBG') {
   }
 
   if (verbose) {
-    addLog(`[${tag}] 解析统计: total=${stats.total}, ok=${stats.ok}, empty=${stats.empty}, comment=${stats.comment}, header=${stats.header}, fewCols=${stats.fewCols}, noNum=${stats.noNum}, range=${stats.outOfRange}, fallback_total=${regList.length}`, 'info');
-    if (rejectSamples.length > 0) addLog(`[${tag}] 失败样例: ${rejectSamples.join(' | ')}`, 'err');
+    addLog(`[${tag}] 解析统计: total=${stats.total}, ok=${stats.ok}, empty=${stats.empty}, comment=${stats.comment}, header=${stats.header}, fewCols=${stats.fewCols}, noNum=${stats.noNum}, range=${stats.outOfRange}, parsed_total=${regList.length}`, 'info');
+    if (rejectSamples.length > 0) {
+      const lv = regList.length > 0 ? 'info' : 'err';
+      const prefix = regList.length > 0 ? '非寄存器行样例' : '失败样例';
+      addLog(`[${tag}] ${prefix}: ${rejectSamples.join(' | ')}`, lv);
+    }
   }
   return regList;
 }
@@ -1791,14 +1986,7 @@ function importConfigFile(event) {
 }
 
 function confirmAndPickConfigDir() {
-  const ok = window.confirm(
-    '上传前，请确认如下测试环境:\n' +
-    '1．黑暗环境，无白炽光干扰，无环境光干扰。\n' +
-    '(验证阶段：可用黑色隔光泡棉进行遮盖）\n' +
-    '2．白色亚克力块盖住光窗，并保持静止。\n' +
-    '3．制作成治具后，白色亚克力和光窗间隔1mm；各个治具的间隔统一。'
-  );
-  if (!ok) return;
+  /* 避免部分浏览器在 confirm + file chooser 连续触发时弹窗闪退 */
   document.getElementById('configDirImport').click();
 }
 
@@ -2153,19 +2341,42 @@ async function checkBackend() {
   }
 }
 
+async function ensureManualConnectOnLoad() {
+  /* 页面启动后强制断开，确保不会自动占用串口，必须用户手动点击连接 */
+  const r = await apiPost('/device/disconnect', {});
+  isConnected = false;
+  isSampling = false;
+  setConnected(false, null);
+  if (r && r.code === 0) {
+    addLog('[INFO] 启动时已保持断开，请手动点击连接', 'info');
+  }
+}
+
 /* ============================================================
  * 初始化
  * ============================================================ */
 window.addEventListener('DOMContentLoaded', () => {
   refreshBuildInfoBanner();
+  userConnTypeOverridden = false;
+  currentConnType = 'ble_at';
+  const connTypeBleEl = document.getElementById('connTypeBle');
+  const connTypeSerialEl = document.getElementById('connTypeSerial');
+  if (connTypeBleEl) connTypeBleEl.checked = true;
+  if (connTypeSerialEl) connTypeSerialEl.checked = false;
   currentWorkMode = parseInt(document.getElementById('workModeSelect')?.value || '0');
   drawWaveform();
   scheduleWaveRender();
   renderLedPanelAll();
   applyRegTableFold();
+  setConnTypeUi();
   applyWorkModeUi();
   ['thLPCTR', 'thLPLCTR', 'thBaseNoise', 'thPPGNoise'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => renderLedPanelAll());
+  });
+  document.getElementById('bleSlaveName')?.addEventListener('input', () => {
+    bleScannedMac = '';
+    updateBleStatusUi(false, '');
+    setConnTypeUi();
   });
 
   addLog('[INFO] GH Protocol UI 已加载', 'info');
@@ -2174,6 +2385,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   /* 1. 立即尝试 WebSocket */
   connectWebSocket();
+  setTimeout(() => { ensureManualConnectOnLoad(); }, 300);
 
   /* 2. 每5秒检测后端（WebSocket断开时的备用恢复）*/
   setInterval(checkBackend, 5000);

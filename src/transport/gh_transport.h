@@ -22,7 +22,9 @@ extern "C" {
 #define GH_FRAME_MARKER1    (0x11U)
 
 /* 接收缓冲区大小 */
-#define GH_TRANSPORT_RX_BUF_SIZE    (8192U)
+#define GH_TRANSPORT_RX_BUF_SIZE    (32768U)
+/* BLE 文本行缓冲（用于解析 +BLERECV=...） */
+#define GH_BLE_LINE_BUF_SIZE        (8192U)
 
 /* 帧超时时间（毫秒），原 frameTimeoutMs = 100 */
 #define GH_FRAME_TIMEOUT_MS         (100U)
@@ -96,6 +98,13 @@ typedef struct {
     volatile bool rx_thread_running;
     gh_thread_t    rx_thread;
     bool           rx_thread_started;
+
+    /* BLE AT 透传模式 */
+    bool           ble_at_mode;
+    char           ble_slave_name[64];
+    char           ble_mac[32];
+    char           ble_line_buf[GH_BLE_LINE_BUF_SIZE];
+    uint16_t       ble_line_len;
 } gh_transport_t;
 
 /* ============================================================
@@ -124,6 +133,38 @@ void gh_transport_init(gh_transport_t* t,
  * @return true=打开成功
  */
 bool gh_transport_open_serial(gh_transport_t* t, const gh_serial_config_t* cfg);
+
+/**
+ * @brief 通过 AT 透传蓝牙模块连接从机并进入透传
+ * @param t          通信层上下文
+ * @param cfg        AT 模块串口参数（固定115200 8N1）
+ * @param slave_name 从机广播名（如 ChelseaA_OS）
+ * @param out_mac    输出连接到的从机 MAC（可为NULL）
+ * @param out_mac_sz out_mac 缓冲区长度
+ * @return true=连接成功并进入透传
+ */
+bool gh_transport_open_ble_at(gh_transport_t* t, const gh_serial_config_t* cfg,
+                              const char* slave_name, char* out_mac, size_t out_mac_sz);
+
+/**
+ * @brief BLE-AT 扫描指定从机名并返回 MAC（仅扫描，不进入透传）
+ */
+bool gh_transport_ble_scan(gh_transport_t* t, const gh_serial_config_t* cfg,
+                           const char* slave_name, char* out_mac, size_t out_mac_sz);
+
+/**
+ * @brief BLE-AT 按指定 MAC 连接并进入透传（跳过扫描）
+ */
+bool gh_transport_open_ble_at_with_mac(gh_transport_t* t, const gh_serial_config_t* cfg,
+                                       const char* slave_name, const char* mac,
+                                       char* out_mac, size_t out_mac_sz);
+
+/**
+ * @brief BLE-AT 快速连接：仅按 MAC 连接并进入透传（不重复初始化参数）
+ */
+bool gh_transport_open_ble_at_fast(gh_transport_t* t, const gh_serial_config_t* cfg,
+                                   const char* slave_name, const char* mac,
+                                   char* out_mac, size_t out_mac_sz);
 
 /**
  * @brief 关闭串口（对应原 serial->close()）

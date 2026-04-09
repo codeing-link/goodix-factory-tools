@@ -11,6 +11,9 @@
 #include "../protocol/gh_rpc.h"
 #include <time.h>
 
+#define CHELSEA_FRAME_BATCH_MAX 255
+#define GH_BLE_AT_UART_BAUD_RATE 115200
+
 /* ============================================================
  * CSV 写入辅助
  * ============================================================ */
@@ -119,14 +122,16 @@ static void s_on_transport_frame(const uint8_t* frame, uint16_t len, void* ctx) 
 
         if (rpc_key[0] == 'G' && rpc_key[1] == '\0') {
             /* 设备发送传感器数据帧 (key="G") */
-            static gh_func_frame_t chelsea_frames[16];
-            static uint32_t chelsea_algo_res[16 * 16];
-            static gh_frame_data_t chelsea_frame_data[16 * 32];
+            static gh_func_frame_t chelsea_frames[CHELSEA_FRAME_BATCH_MAX];
+            static uint32_t chelsea_algo_res[CHELSEA_FRAME_BATCH_MAX * 16];
+            static gh_frame_data_t chelsea_frame_data[CHELSEA_FRAME_BATCH_MAX * 32];
             static bool chelsea_init = false;
             static uint32_t g_no_u8_array_count = 0;
+            static uint32_t g_invalid_frameid_count = 0;
+            static uint32_t g_zero_parsed_count = 0;
 
             if (!chelsea_init) {
-                for (int i = 0; i < 16; i++) {
+                for (int i = 0; i < CHELSEA_FRAME_BATCH_MAX; i++) {
                     memset(&chelsea_frames[i], 0, sizeof(gh_func_frame_t));
                     chelsea_frames[i].p_data = &chelsea_frame_data[i * 32];
                     chelsea_frames[i].p_algo_res = &chelsea_algo_res[i * 16];
@@ -150,6 +155,16 @@ static void s_on_transport_frame(const uint8_t* frame, uint16_t len, void* ctx) 
             uint8_t parsed_len = 0;
 
             gh_protocol_process(&p_frames, &parsed_len, (uint8_t*)raw_data, (uint32_t)raw_len);
+            if (parsed_len == 0) {
+                g_zero_parsed_count++;
+                if (svc->on_log && (g_zero_parsed_count <= 3U || (g_zero_parsed_count % 50U) == 0U)) {
+                    char log_buf[192];
+                    snprintf(log_buf, sizeof(log_buf),
+                             "[RPC] key=G parsed_len=0 (cnt=%u, raw_len=%d, fallback=%d, params_len=%d)",
+                             (unsigned)g_zero_parsed_count, raw_len, used_fallback ? 1 : 0, rpc_params_len);
+                    svc->on_log(log_buf, svc->on_log_ctx);
+                }
+            }
             if (used_fallback && parsed_len == 0) {
                 /* 限频日志：前3次打印，之后每50次打印一次累计计数 */
                 if (svc->on_log && (g_no_u8_array_count <= 3 || (g_no_u8_array_count % 50U) == 0U)) {
@@ -161,16 +176,61 @@ static void s_on_transport_frame(const uint8_t* frame, uint16_t len, void* ctx) 
                 }
                 return;
             }
-            if (parsed_len > 16) {
-                if (svc->on_log) svc->on_log("[RPC] key=G: parsed_len overflow, clamped to 16", svc->on_log_ctx);
-                parsed_len = 16;
+            if (parsed_len > CHELSEA_FRAME_BATCH_MAX) {
+                if (svc->on_log) {
+                    char log_buf[128];
+                    snprintf(log_buf, sizeof(log_buf),
+                             "[RPC] key=G: parsed_len overflow, clamped to %d",
+                             CHELSEA_FRAME_BATCH_MAX);
+                    svc->on_log(log_buf, svc->on_log_ctx);
+                }
+                parsed_len = CHELSEA_FRAME_BATCH_MAX;
+            } else if (parsed_len == CHELSEA_FRAME_BATCH_MAX) {
+                if (svc->on_log) svc->on_log("[RPC] key=G: batch reached frame cap, consider raising cap", svc->on_log_ctx);
             }
 
         for (uint8_t i = 0; i < parsed_len; i++) {
+            uint32_t frame_cnt = p_frames[i].frame_cnt;
+            /* 某些模式下 frame_id 可能出现异常值。不要直接丢帧，按连续序号兜底。 */
+            if (frame_cnt > 1000000U) {
+                uint32_t fixed = svc->has_last_frame_cnt ? (svc->last_frame_cnt + 1U) : 0U;
+                g_invalid_frameid_count++;
+                if (svc->on_log && (g_invalid_frameid_count <= 3U || (g_invalid_frameid_count % 100U) == 0U)) {
+                    char log_buf[192];
+                    snprintf(log_buf, sizeof(log_buf),
+                             "[RPC] invalid frame_cnt=%u -> fallback=%u (cnt=%u)",
+                             (unsigned)frame_cnt, (unsigned)fixed, (unsigned)g_invalid_frameid_count);
+                    svc->on_log(log_buf, svc->on_log_ctx);
+                }
+                frame_cnt = fixed;
+                p_frames[i].frame_cnt = frame_cnt;
+            }
+            if (svc->has_last_frame_cnt) {
+                uint32_t prev = svc->last_frame_cnt;
+                uint32_t cur = frame_cnt;
+                if (cur > prev) {
+                    uint32_t diff = cur - prev;
+                    if (diff > 1U) {
+                        uint32_t lost = diff - 1U;
+                        svc->frame_gap_events++;
+                        svc->frame_gap_total += lost;
+                        if (svc->on_log) {
+                            char log_buf[192];
+                            snprintf(log_buf, sizeof(log_buf),
+                                     "[FRAME_GAP] prev=%u curr=%u lost=%u events=%u total_lost=%u",
+                                     (unsigned)prev, (unsigned)cur, (unsigned)lost,
+                                     (unsigned)svc->frame_gap_events, (unsigned)svc->frame_gap_total);
+                            svc->on_log(log_buf, svc->on_log_ctx);
+                        }
+                    }
+                }
+            }
+            svc->last_frame_cnt = frame_cnt;
+            svc->has_last_frame_cnt = true;
             gh_data_frame_t data;
             memset(&data, 0, sizeof(data));
             data.func_id = p_frames[i].id;
-            data.frame_cnt = p_frames[i].frame_cnt;
+            data.frame_cnt = frame_cnt;
             
             /* 映射原始数据：
              * ch 路输入时，优先放 raw 到前半段；
@@ -440,6 +500,10 @@ void gh_service_init(gh_service_t* svc,
     svc->rpc_com_id   = 0x08;
     GH_MUTEX_INIT(&svc->csv_lock);
     svc->csv_rows_written = 0;
+    svc->has_last_frame_cnt = false;
+    svc->last_frame_cnt = 0;
+    svc->frame_gap_events = 0;
+    svc->frame_gap_total = 0;
 
     /* 初始化默认串口配置 */
     strncpy(svc->serial_cfg.port, "/dev/ttyUSB0", sizeof(svc->serial_cfg.port));
@@ -479,6 +543,99 @@ bool gh_service_connect_serial(gh_service_t* svc, const char* port) {
     return true;
 }
 
+bool gh_service_connect_ble_at(gh_service_t* svc, const char* at_port, const char* slave_name) {
+    return gh_service_connect_ble_at_with_mac(svc, at_port, slave_name, NULL);
+}
+
+bool gh_service_connect_ble_at_with_mac(gh_service_t* svc, const char* at_port, const char* slave_name, const char* mac) {
+    if (!svc || !at_port || !slave_name) return false;
+    const int baud = GH_BLE_AT_UART_BAUD_RATE;
+    char mac_buf[32];
+
+    strncpy(svc->serial_cfg.port, at_port, sizeof(svc->serial_cfg.port));
+    svc->serial_cfg.baud_rate = baud;
+    svc->serial_cfg.data_bits = 8;
+    svc->serial_cfg.parity = 'N';
+    svc->serial_cfg.stop_bits = 1;
+    svc->serial_cfg.flow_control = false;
+
+    if (svc->on_log) {
+        char log_buf[160];
+        snprintf(log_buf, sizeof(log_buf), "[Service] BLE-AT connect try baud=%d", baud);
+        svc->on_log(log_buf, svc->on_log_ctx);
+    }
+    if (gh_transport_open_ble_at_with_mac(&svc->transport, &svc->serial_cfg, slave_name, mac, mac_buf, sizeof(mac_buf))) {
+        gh_transport_start_rx_thread(&svc->transport);
+        if (svc->on_log) {
+            char log_buf[192];
+            snprintf(log_buf, sizeof(log_buf), "[Service] BLE-AT connected: name=%s mac=%s baud=%d", slave_name, mac_buf, baud);
+            svc->on_log(log_buf, svc->on_log_ctx);
+        }
+        return true;
+    }
+
+    svc->device_state = GH_DEV_STATE_ERROR;
+    if (svc->on_state) svc->on_state(svc->device_state, svc->on_state_ctx);
+    return false;
+}
+
+bool gh_service_connect_ble_at_fast(gh_service_t* svc, const char* at_port, const char* slave_name, const char* mac) {
+    if (!svc || !at_port || !slave_name || !mac || mac[0] == '\0') return false;
+    const int baud = GH_BLE_AT_UART_BAUD_RATE;
+    char mac_buf[32];
+
+    strncpy(svc->serial_cfg.port, at_port, sizeof(svc->serial_cfg.port));
+    svc->serial_cfg.baud_rate = baud;
+    svc->serial_cfg.data_bits = 8;
+    svc->serial_cfg.parity = 'N';
+    svc->serial_cfg.stop_bits = 1;
+    svc->serial_cfg.flow_control = false;
+
+    if (svc->on_log) {
+        char log_buf[160];
+        snprintf(log_buf, sizeof(log_buf), "[Service] BLE-AT fast connect try baud=%d", baud);
+        svc->on_log(log_buf, svc->on_log_ctx);
+    }
+
+    if (gh_transport_open_ble_at_fast(&svc->transport, &svc->serial_cfg, slave_name, mac, mac_buf, sizeof(mac_buf))) {
+        gh_transport_start_rx_thread(&svc->transport);
+        if (svc->on_log) {
+            char log_buf[192];
+            snprintf(log_buf, sizeof(log_buf), "[Service] BLE-AT fast connected: name=%s mac=%s baud=%d", slave_name, mac_buf, baud);
+            svc->on_log(log_buf, svc->on_log_ctx);
+        }
+        return true;
+    }
+
+    svc->device_state = GH_DEV_STATE_ERROR;
+    if (svc->on_state) svc->on_state(svc->device_state, svc->on_state_ctx);
+    return false;
+}
+
+bool gh_service_scan_ble_at(gh_service_t* svc, const char* at_port, const char* slave_name, char* out_mac, size_t out_mac_sz) {
+    if (!svc || !at_port || !slave_name || !out_mac || out_mac_sz < 2) return false;
+    const int baud = GH_BLE_AT_UART_BAUD_RATE;
+
+    gh_serial_config_t cfg = {0};
+    strncpy(cfg.port, at_port, sizeof(cfg.port));
+    cfg.baud_rate = baud;
+    cfg.data_bits = 8;
+    cfg.parity = 'N';
+    cfg.stop_bits = 1;
+    cfg.flow_control = false;
+
+    if (svc->on_log) {
+        char log_buf[160];
+        snprintf(log_buf, sizeof(log_buf), "[Service] BLE-AT scan try baud=%d", baud);
+        svc->on_log(log_buf, svc->on_log_ctx);
+    }
+
+    /* 扫描使用临时 transport，避免影响主连接状态机 */
+    gh_transport_t tmp;
+    gh_transport_init(&tmp, NULL, NULL, NULL, NULL, (gh_log_cb)svc->on_log, svc->on_log_ctx);
+    return gh_transport_ble_scan(&tmp, &cfg, slave_name, out_mac, out_mac_sz);
+}
+
 void gh_service_disconnect(gh_service_t* svc) {
     if (!svc) return;
     /* 断开时关闭 CSV（若采集中断）*/
@@ -497,6 +654,11 @@ void gh_service_disconnect(gh_service_t* svc) {
 
 bool gh_service_is_connected(const gh_service_t* svc) {
     return (svc && gh_transport_is_open(&svc->transport));
+}
+
+const char* gh_service_get_ble_mac(const gh_service_t* svc) {
+    if (!svc || !svc->transport.ble_at_mode || svc->transport.ble_mac[0] == '\0') return "";
+    return svc->transport.ble_mac;
 }
 
 bool gh_service_start_hbd(gh_service_t* svc,
@@ -523,6 +685,10 @@ bool gh_service_start_hbd(gh_service_t* svc,
     }
     if (ret && ctrl_bit == 0) {
         svc->device_state = GH_DEV_STATE_SAMPLING;
+        svc->has_last_frame_cnt = false;
+        svc->last_frame_cnt = 0;
+        svc->frame_gap_events = 0;
+        svc->frame_gap_total = 0;
         /* 开启采集：打开 CSV 文件并写入表头 */
         if (svc->csv_filename[0] != '\0') {
             bool open_ok = false;

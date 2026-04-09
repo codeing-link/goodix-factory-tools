@@ -57,7 +57,7 @@
 #define GH_GSENSOR_MAX           (6)  // Assuming max 3 for acc + 3 for gyro
 #define GH_ALG_RESULTS_MAX       (32)
 #define GH_AGC_INFO_MAX          (32)
-#define GH_PROTOCOL_OUT_FRAME_MAX (16)
+#define GH_PROTOCOL_OUT_FRAME_MAX (255)
 
 /*
  * ENUMERATIONS FOR ALGORITHM DATA INDEXES
@@ -250,7 +250,7 @@ static uint32_t gh_protocol_process_single_frame(gh_func_frame_t* p_func_frame, 
     // memset(p_func_frame, 0, sizeof(gh_func_frame_t));
     
     // Map data from data_frame to gh_func_frame_t
-    p_func_frame->frame_cnt = data_frame.frame_id;
+    p_func_frame->frame_cnt = (uint32_t)data_frame.frame_id;
     p_func_frame->id = (gh_func_fix_idx_e)data_frame.function_id;
     
     // Handle timestamp
